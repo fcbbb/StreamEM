@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "streamem"
+version = "0.1.0"
+description = "StreamEM conversation cutting and graph-memory experiments"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "httpx>=0.27,<1",
+    "networkx>=3.2,<4",
+    "numpy>=1.26,<3",
+    "openai>=1.30,<2",
+    "python-dotenv>=1.0,<2",
+]
+
+[project.optional-dependencies]
+graph = [
+    "igraph>=0.11,<1",
+    "keybert>=0.8,<1",
+    "leidenalg>=0.10,<1",
+    "sentence-transformers>=3,<6",
+    "spacy>=3.7,<4",
+]
+
+[project.scripts]
+streamem-cutting = "analyse3.cutting.cutting_pipeline.cli:main"
+streamem-graph-weekly = "stream_memory_graph_weekly:main"
+streamem-anchor-build = "analyse3.anchor.build_anchor_dataset:main"
+streamem-anchor-pilot = "analyse3.anchor.select_anchor_pilot_60:main"
+streamem-anchor-annotate = "analyse3.anchor.annotate_pair_labels_direct:main"
+streamem-anchor-extract = "analyse3.anchor.run_anchor_extraction:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["analyse3*"]
+
+[tool.setuptools]
+py-modules = ["stream_memory_graph_weekly"]
+
+[tool.uv]
+default-groups = []

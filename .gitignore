@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local credentials and runtime outputs
+.env
+analyse3/cutting/artifacts/*/predictions.jsonl
+analyse3/cutting/artifacts/*/run_manifest.json
+analyse3/cutting/artifacts/*/evaluation.json
+analyse3/cutting/artifacts/*/evaluation.md
+analyse3/anchor/artifacts/*/pilot_v1/anchor_outputs*.jsonl
