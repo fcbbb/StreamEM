@@ -1,0 +1,120 @@
+{
+  "run_name": "knn_k10__leiden__r1p0",
+  "graph_rule": {
+    "name": "knn_k10",
+    "type": "knn",
+    "k": 10
+  },
+  "algorithm": "leiden",
+  "resolution": 1.0,
+  "embedding_model": "all-MiniLM-L6-v2",
+  "community_metrics": {
+    "pair_count": 1505,
+    "positive_count": 224,
+    "negative_count": 1281,
+    "tp": 172,
+    "fp": 339,
+    "tn": 942,
+    "fn": 52,
+    "precision": 0.33659491193737767,
+    "recall": 0.7678571428571429,
+    "f1": 0.4680272108843537,
+    "overmerge_rate": 0.6634050880626223,
+    "oversplit_rate": 0.23214285714285715,
+    "uncertain_pair_count": 71,
+    "relation_counts": {
+      "same_broad_family": 432,
+      "same_memory_item": 143,
+      "same_project_different_aspect": 19,
+      "same_specific_topic": 81,
+      "shared_entity_only": 3,
+      "uncertain": 71,
+      "unrelated": 827
+    },
+    "same_community_by_relation": {
+      "same_broad_family": {
+        "count": 432,
+        "same_community_count": 251,
+        "same_community_rate": 0.5810185185185185
+      },
+      "same_memory_item": {
+        "count": 143,
+        "same_community_count": 133,
+        "same_community_rate": 0.9300699300699301
+      },
+      "same_project_different_aspect": {
+        "count": 19,
+        "same_community_count": 2,
+        "same_community_rate": 0.10526315789473684
+      },
+      "same_specific_topic": {
+        "count": 81,
+        "same_community_count": 39,
+        "same_community_rate": 0.48148148148148145
+      },
+      "shared_entity_only": {
+        "count": 3,
+        "same_community_count": 1,
+        "same_community_rate": 0.3333333333333333
+      },
+      "uncertain": {
+        "count": 71,
+        "same_community_count": 7,
+        "same_community_rate": 0.09859154929577464
+      },
+      "unrelated": {
+        "count": 827,
+        "same_community_count": 85,
+        "same_community_rate": 0.10278113663845223
+      }
+    }
+  },
+  "edge_metrics": {
+    "pair_count": 1505,
+    "positive_count": 224,
+    "negative_count": 1281,
+    "tp": 149,
+    "fp": 118,
+    "tn": 1163,
+    "fn": 75,
+    "precision": 0.5580524344569289,
+    "recall": 0.6651785714285714,
+    "f1": 0.6069246435845214,
+    "overmerge_rate": 0.4419475655430712,
+    "oversplit_rate": 0.33482142857142855
+  },
+  "graph_metrics": {
+    "node_count": 277,
+    "edge_count": 1369,
+    "edge_density": 0.035813320776434884,
+    "mean_degree": 9.884476534296029,
+    "median_degree": 10,
+    "max_degree": 28,
+    "isolated_node_count": 0,
+    "isolated_node_fraction": 0.0,
+    "connected_component_count": 1,
+    "largest_component_size": 277,
+    "largest_component_fraction": 1.0
+  },
+  "community_stats": {
+    "community_count": 12,
+    "largest_community_size": 46,
+    "largest_community_fraction": 0.16606498194945848,
+    "singleton_community_count": 0,
+    "singleton_community_fraction": 0.0,
+    "community_sizes": [
+      46,
+      41,
+      32,
+      26,
+      26,
+      26,
+      20,
+      20,
+      14,
+      13,
+      10,
+      3
+    ]
+  }
+}

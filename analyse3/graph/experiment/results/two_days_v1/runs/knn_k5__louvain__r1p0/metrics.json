@@ -1,0 +1,97 @@
+{
+  "run_name": "knn_k5__louvain__r1p0",
+  "graph_rule": {
+    "name": "knn_k5",
+    "type": "knn",
+    "k": 5
+  },
+  "algorithm": "louvain",
+  "resolution": 1.0,
+  "embedding_model": "all-MiniLM-L6-v2",
+  "community_metrics": {
+    "pair_count": 178,
+    "positive_count": 28,
+    "negative_count": 150,
+    "tp": 21,
+    "fp": 61,
+    "tn": 89,
+    "fn": 7,
+    "precision": 0.25609756097560976,
+    "recall": 0.75,
+    "f1": 0.38181818181818183,
+    "overmerge_rate": 0.7439024390243902,
+    "oversplit_rate": 0.25,
+    "uncertain_pair_count": 0,
+    "relation_counts": {
+      "same_broad_family": 36,
+      "same_memory_item": 14,
+      "same_specific_topic": 14,
+      "unrelated": 114
+    },
+    "same_community_by_relation": {
+      "same_broad_family": {
+        "count": 36,
+        "same_community_count": 35,
+        "same_community_rate": 0.9722222222222222
+      },
+      "same_memory_item": {
+        "count": 14,
+        "same_community_count": 14,
+        "same_community_rate": 1.0
+      },
+      "same_specific_topic": {
+        "count": 14,
+        "same_community_count": 7,
+        "same_community_rate": 0.5
+      },
+      "unrelated": {
+        "count": 114,
+        "same_community_count": 26,
+        "same_community_rate": 0.22807017543859648
+      }
+    }
+  },
+  "edge_metrics": {
+    "pair_count": 178,
+    "positive_count": 28,
+    "negative_count": 150,
+    "tp": 20,
+    "fp": 27,
+    "tn": 123,
+    "fn": 8,
+    "precision": 0.425531914893617,
+    "recall": 0.7142857142857143,
+    "f1": 0.5333333333333333,
+    "overmerge_rate": 0.574468085106383,
+    "oversplit_rate": 0.2857142857142857
+  },
+  "graph_metrics": {
+    "node_count": 89,
+    "edge_count": 233,
+    "edge_density": 0.059499489274770175,
+    "mean_degree": 5.235955056179775,
+    "median_degree": 5,
+    "max_degree": 14,
+    "isolated_node_count": 0,
+    "isolated_node_fraction": 0.0,
+    "connected_component_count": 1,
+    "largest_component_size": 89,
+    "largest_component_fraction": 1.0
+  },
+  "community_stats": {
+    "community_count": 7,
+    "largest_community_size": 24,
+    "largest_community_fraction": 0.2696629213483146,
+    "singleton_community_count": 0,
+    "singleton_community_fraction": 0.0,
+    "community_sizes": [
+      24,
+      19,
+      13,
+      12,
+      10,
+      9,
+      2
+    ]
+  }
+}

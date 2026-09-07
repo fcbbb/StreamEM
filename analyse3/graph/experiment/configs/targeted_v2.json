@@ -1,0 +1,51 @@
+{
+  "anchor_field": "core_target",
+  "target_type_gate": false,
+  "expected_input_count": 277,
+  "expected_node_count": 89,
+  "session_filter": {
+    "mode": "first_n",
+    "count": 48
+  },
+  "seed": 42,
+  "paths": {
+    "anchor_output": "../../../anchor/artifacts/anchor_dataset_v1/output/new_outputv8_target_aspect_full.jsonl",
+    "segments": "../../../anchor/artifacts/anchor_dataset_v1/segments.jsonl",
+    "pair_candidates": "../../../anchor/artifacts/anchor_dataset_v1/pair_candidates.jsonl",
+    "pair_gold": "../../../anchor/artifacts/anchor_dataset_v1/pair_gold_labels.jsonl"
+  },
+  "output_dir": "../results/two_days_targeted_v2",
+  "embedding": {
+    "model": "all-MiniLM-L6-v2",
+    "batch_size": 64,
+    "device": null
+  },
+  "graph_rules": [
+    {
+      "name": "threshold_0p50",
+      "type": "threshold",
+      "threshold": 0.5
+    },
+    {
+      "name": "threshold_0p60",
+      "type": "threshold",
+      "threshold": 0.6
+    },
+    {
+      "name": "mutual_knn_k5_tau0p50",
+      "type": "mutual_knn",
+      "k": 5,
+      "min_similarity": 0.5
+    },
+    {
+      "name": "mutual_knn_k10_tau0p50",
+      "type": "mutual_knn",
+      "k": 10,
+      "min_similarity": 0.5
+    }
+  ],
+  "community_detection": {
+    "algorithms": ["leiden", "louvain"],
+    "resolutions": [1.0]
+  }
+}

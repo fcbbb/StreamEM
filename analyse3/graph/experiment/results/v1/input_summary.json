@@ -1,0 +1,15 @@
+{
+  "anchor_output": "F:\\StreamEM\\analyse3\\anchor\\artifacts\\anchor_dataset_v1\\output\\new_outputv2_full_manual.jsonl",
+  "anchor_field": "selected_anchor",
+  "input_row_count": 277,
+  "node_count": 277,
+  "pair_count": 1576,
+  "non_empty_anchor_count": 277,
+  "empty_anchor_count": 0,
+  "definite_pair_count": 1505,
+  "embedding_model": "all-MiniLM-L6-v2",
+  "embedding_stats": {
+    "unique_texts": 273,
+    "cache_misses": 0
+  }
+}

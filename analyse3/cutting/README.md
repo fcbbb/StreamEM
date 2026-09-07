@@ -9,7 +9,7 @@
 - `purity.py`：段内纯度人工抽检模板；
 - `workflow.py` / `cli.py`：实验运行、评价和命令行入口。
 
-实际发送给模型的 Prompt 为英文，版本号为 `conversation-cutting-en-v2-gold-aligned`。Prompt 明确要求将开头 greeting、实质 interaction、结尾 goodbye 对齐到当前 gold 标注规则。默认模型为 `gpt-5.6-luna`，通过 OpenCode Go 的 `/responses` 接口调用。Luna 不接受 `temperature` 参数，因此 Responses 请求会省略该参数；Chat Completions 模型仍使用配置的 temperature。认证、额度和模型不支持类错误不会自动重试；如需改用 Chat Completions 模型，可显式传入 `--model glm-5.3-flash`。
+实际发送给模型的 Prompt 为英文，版本号为 `conversation-cutting-en-v2-fact-single`。Prompt 明确要求将事实保持完整且单一，并避免在助手问题与直接回答之间切开。默认模型为 `gpt-5.6-luna`，通过 OpenCode Go 的 `/responses` 接口调用。Luna 不接受 `temperature` 参数，因此 Responses 请求会省略该参数；Chat Completions 模型仍使用配置的 temperature。认证、额度和模型不支持类错误不会自动重试；如需改用 Chat Completions 模型，可显式传入 `--model glm-5.3-flash`。
 
 默认使用 `annotations/initial_60.jsonl` 的 60 个 session 作为评估集。标注文件中的 `initial_for_review` 状态会被原样保留；脚本不会改写人工标注。
 
@@ -85,3 +85,7 @@ uv run streamem-cutting evaluate \
 ```
 
 `pure` 的定义是：一个预测事件是否没有包含两个可以独立形成记忆锚点的交互目标。未填写的样本不会进入纯度分母。
+
+
+
+段一定要纯净，例如消费表达最多加一句符合，只要后续不再是这个话题就一定要切开。话题讨论可以相对宽松

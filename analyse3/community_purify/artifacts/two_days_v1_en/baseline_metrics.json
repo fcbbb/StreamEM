@@ -1,0 +1,36 @@
+{
+  "evaluated_at": "2026-09-06T02:55:29.522780+00:00",
+  "annotated_pairs_inside_original_communities": 28,
+  "original_community_count": 53,
+  "non_singleton_community_count": 20,
+  "successful_community_count": 53,
+  "split_community_count": 0,
+  "baseline_no_purification": {
+    "pair_count": 28,
+    "cross_topic_merge_rate": 1.0,
+    "hard_oversplit_rate": 0.0,
+    "soft_oversplit_rate": 0.0,
+    "broad_topic_retention": 1.0,
+    "compatible_pair_retention": 1.0,
+    "relation_counts": {
+      "same_memory_item": 14,
+      "same_broad_family": 7,
+      "same_specific_topic": 5,
+      "unrelated": 2
+    }
+  },
+  "purified": {
+    "pair_count": 28,
+    "cross_topic_merge_rate": 1.0,
+    "hard_oversplit_rate": 0.0,
+    "soft_oversplit_rate": 0.0,
+    "broad_topic_retention": 1.0,
+    "compatible_pair_retention": 1.0,
+    "relation_counts": {
+      "same_memory_item": 14,
+      "same_broad_family": 7,
+      "same_specific_topic": 5,
+      "unrelated": 2
+    }
+  }
+}

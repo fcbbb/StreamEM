@@ -15,9 +15,10 @@ ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent.parent
 PROJECT_ENV_FILE = REPO_ROOT / ".env"
 DEFAULT_INPUT = ROOT / "artifacts" / "anchor_dataset_v1" / "pilot_v1" / "pilot_sample_60.jsonl"
-DEFAULT_PROMPT = ROOT / "artifacts" / "anchor_dataset_v1" / "pilot_v1" / "anchor_extraction_prompt_v1.md"
-DEFAULT_OUTPUT = ROOT / "artifacts" / "anchor_dataset_v1" / "pilot_v1" / "anchor_outputs_candidate_selection_v1.jsonl"
-RESPONSES_MODELS = {"gpt-5.6-luna"}
+DEFAULT_PROMPT = ROOT / "artifacts" / "anchor_dataset_v1" / "pilot_v1" / "anchor_extraction_prompt_v8_target_aspect.md"
+DEFAULT_OUTPUT = ROOT / "artifacts" / "anchor_dataset_v1" / "pilot_v1" / "anchor_outputs_target_aspect_v8.jsonl"
+DEFAULT_CHAT_COMPLETIONS_URL = "http://localhost:8080/v1/chat/completions"
+DEFAULT_BASE_URL = DEFAULT_CHAT_COMPLETIONS_URL.removesuffix("/chat/completions")
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--prompt", type=Path, default=DEFAULT_PROMPT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--method", default="target_aspect_v8")
     parser.add_argument("--model", default="gpt-5.6-luna")
     parser.add_argument("--base-url")
     parser.add_argument("--api-key")
@@ -85,14 +87,70 @@ def extract_json(content: str) -> dict:
     return value
 
 
+def _validate_nullable_string(value: dict, key: str) -> None:
+    if value[key] is not None and not isinstance(value[key], str):
+        raise ValueError(f"{key} must be a string or null")
+
+
 def validate_result(value: dict) -> None:
-    required = {"coarse_candidate", "selected_anchor", "fine_candidate", "reason"}
+    # Minimal target/aspect schema: the extraction contract intentionally has
+    # only the two semantic fields needed by the caller.
+    if set(value) == {"core_target", "aspect"}:
+        _validate_nullable_string(value, "core_target")
+        _validate_nullable_string(value, "aspect")
+        if value["core_target"] is None and value["aspect"] is not None:
+            raise ValueError("aspect requires core_target in target/aspect schema")
+        return
+    # Minimal prompt schema: the extraction contract is intentionally just one
+    # anchor field.  Keep it separate from the richer legacy schema below.
+    if set(value) == {"selected_anchor"}:
+        _validate_nullable_string(value, "selected_anchor")
+        return
+    # Keep the original candidate-selection schema usable while allowing the
+    # targeted-v2 schema to add a stable clustering target.  This is detected
+    # from schema_version/cluster_anchor so old result files remain readable.
+    targeted = value.get("schema_version") == "targeted_v2" or "cluster_anchor" in value
+    if targeted:
+        required = {
+            "schema_version",
+            "target_type",
+            "target_name",
+            "target_scope",
+            "facet",
+            "operation",
+            "cluster_anchor",
+            "detail_anchor",
+            "selected_anchor",
+            "reason",
+        }
+    else:
+        required = {"coarse_candidate", "selected_anchor", "fine_candidate", "reason"}
     missing = required - set(value)
     if missing:
         raise ValueError(f"Missing output fields: {sorted(missing)}")
-    for key in ("coarse_candidate", "selected_anchor", "fine_candidate"):
-        if value[key] is not None and not isinstance(value[key], str):
-            raise ValueError(f"{key} must be a string or null")
+    if targeted:
+        if value["schema_version"] != "targeted_v2":
+            raise ValueError("schema_version must be targeted_v2")
+        for key in (
+            "target_type",
+            "target_name",
+            "target_scope",
+            "facet",
+            "operation",
+            "cluster_anchor",
+            "detail_anchor",
+            "selected_anchor",
+        ):
+            _validate_nullable_string(value, key)
+        if value["selected_anchor"] != value["detail_anchor"]:
+            raise ValueError("selected_anchor must equal detail_anchor in targeted_v2")
+        if value["cluster_anchor"] is not None and (
+            value["target_type"] is None or value["target_name"] is None
+        ):
+            raise ValueError("cluster_anchor requires target_type and target_name")
+    else:
+        for key in ("coarse_candidate", "selected_anchor", "fine_candidate"):
+            _validate_nullable_string(value, key)
     if not isinstance(value["reason"], str):
         raise ValueError("reason must be a string")
 
@@ -102,6 +160,8 @@ def main() -> None:
     load_project_env(Path(args.env_file))
     args.api_key = (
         args.api_key
+        or os.getenv("LOCAL_OPENAI_API_KEY")
+        or os.getenv("ANCHOR_OPENAI_API_KEY")
         or os.getenv("CUTTING_OPENAI_API_KEY")
         or os.getenv("GRAPH_WEEKLY_OPENAI_API_KEY")
         or os.getenv("OPENAI_API_KEY")
@@ -109,15 +169,21 @@ def main() -> None:
     )
     args.base_url = (
         args.base_url
-        or os.getenv("CUTTING_OPENAI_BASE_URL")
-        or os.getenv("GRAPH_WEEKLY_OPENAI_BASE_URL")
+        or os.getenv("LOCAL_OPENAI_BASE_URL")
+        or os.getenv("ANCHOR_OPENAI_BASE_URL")
         or os.getenv("OPENAI_BASE_URL")
-        or "https://openrouter.ai/api/v1"
+        or DEFAULT_BASE_URL
     )
+    # The OpenAI SDK appends /chat/completions itself. Accept the full endpoint
+    # in CLI/env input as a convenience, while passing only the API root to SDK.
+    args.base_url = args.base_url.rstrip("/")
+    if args.base_url.endswith("/chat/completions"):
+        args.base_url = args.base_url[: -len("/chat/completions")]
     if not args.api_key:
         raise SystemExit(
-            "Missing API key. Set CUTTING_OPENAI_API_KEY, GRAPH_WEEKLY_OPENAI_API_KEY, "
-            "OPENAI_API_KEY, or OPENROUTER_API_KEY; or pass --api-key."
+            "Missing API key. Set LOCAL_OPENAI_API_KEY, ANCHOR_OPENAI_API_KEY, "
+            "OPENAI_API_KEY, "
+            "or pass --api-key."
         )
 
     rows = load_jsonl(args.input)
@@ -166,7 +232,7 @@ def main() -> None:
         started = time.time()
         base_result = {
             "segment_id": segment_id,
-            "method": "candidate_selection_v1",
+            "method": args.method,
             "input_variant": "single_segment",
             "model": args.model,
             "temperature": args.temperature,
@@ -174,39 +240,22 @@ def main() -> None:
             "requested_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            if args.model in RESPONSES_MODELS:
-                response = client.responses.create(
-                    model=args.model,
-                    input=[{"role": "user", "content": user_prompt}],
-                    max_output_tokens=args.max_output_tokens,
-                )
-                content = getattr(response, "output_text", "") or ""
-                if not content:
-                    output = getattr(response, "output", None) or []
-                    chunks = []
-                    for item in output:
-                        parts = item.get("content", []) if isinstance(item, dict) else getattr(item, "content", []) or []
-                        for part in parts:
-                            text = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
-                            if text:
-                                chunks.append(text)
-                    content = "\n".join(chunks)
-            else:
-                request.update({
-                    "messages": [{"role": "user", "content": user_prompt}],
-                    "temperature": args.temperature,
-                    "max_tokens": args.max_output_tokens,
-                })
-                if args.seed is not None:
-                    request["seed"] = args.seed
-                if not args.no_json_mode:
-                    request["response_format"] = {"type": "json_object"}
-                response = client.chat.completions.create(**request)
-                content = response.choices[0].message.content or ""
+            request.update({
+                "messages": [{"role": "user", "content": user_prompt}],
+                "temperature": args.temperature,
+                "max_tokens": args.max_output_tokens,
+            })
+            if args.seed is not None:
+                request["seed"] = args.seed
+            if not args.no_json_mode:
+                request["response_format"] = {"type": "json_object"}
+            response = client.chat.completions.create(**request)
+            content = response.choices[0].message.content or ""
             value = extract_json(content)
             validate_result(value)
             result = {**base_result, **value, "status": "success", "elapsed_seconds": round(time.time() - started, 3)}
-            print(f"[{position}/{len(selected_rows)}] success {segment_id}: {value['selected_anchor']}")
+            display_anchor = value.get("selected_anchor") or value.get("core_target")
+            print(f"[{position}/{len(selected_rows)}] success {segment_id}: {display_anchor}")
         except Exception as exc:  # preserve failures for resumable runs
             result = {
                 **base_result,

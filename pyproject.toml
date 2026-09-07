@@ -14,6 +14,7 @@ dependencies = [
     "numpy>=1.26,<3",
     "openai>=1.30,<2",
     "python-dotenv>=1.0,<2",
+    "spacy>=3.7,<4",
 ]
 
 [project.optional-dependencies]
@@ -22,20 +23,27 @@ graph = [
     "keybert>=0.8,<1",
     "leidenalg>=0.10,<1",
     "sentence-transformers>=3,<6",
-    "spacy>=3.7,<4",
+]
+nlp-trf = [
+    "en-core-web-trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl",
+]
+anchor-eval = [
+    "sentence-transformers>=3,<6",
 ]
 
 [project.scripts]
 streamem-cutting = "analyse3.cutting.cutting_pipeline.cli:main"
+streamem-cutting-v4 = "analyse4.cutting.cutting_pipeline.cli:main"
 streamem-graph-weekly = "stream_memory_graph_weekly:main"
 streamem-anchor-build = "analyse3.anchor.build_anchor_dataset:main"
 streamem-anchor-pilot = "analyse3.anchor.select_anchor_pilot_60:main"
 streamem-anchor-annotate = "analyse3.anchor.annotate_pair_labels_direct:main"
 streamem-anchor-extract = "analyse3.anchor.run_anchor_extraction:main"
+streamem-anchor-eval = "analyse3.anchor.evaluate_anchor_similarity:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["analyse3*"]
+include = ["analyse3*", "analyse4*"]
 
 [tool.setuptools]
 py-modules = ["stream_memory_graph_weekly"]

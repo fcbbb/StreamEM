@@ -1,0 +1,12 @@
+{
+  "evaluated_at": "2026-09-06T09:06:35.444534+00:00",
+  "structural": {
+    "case_count": 20,
+    "status_counts": {
+      "ok": 16,
+      "empty": 4
+    },
+    "json_and_schema_valid_rate": 1.0,
+    "source_linkage_generated_by_code_rate": 1.0
+  }
+}

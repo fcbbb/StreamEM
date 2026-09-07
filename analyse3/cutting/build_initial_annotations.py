@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Build the first-pass 60-session event-boundary annotations.
+"""Build the audited 60-session event-boundary annotations.
 
 The source conversations are kept unchanged.  This script only derives stable
-semantic-unit IDs and applies the manually reviewed first-pass boundary map.
+semantic-unit IDs and applies the audited boundary map.
 """
 
 import json
@@ -21,9 +21,11 @@ OUT_FILE = OUT_DIR / "initial_60.jsonl"
 # sentence_number is 1-based.  Omitting a session means one event for the
 # whole session.  This map intentionally covers sessions 1..60, which form a
 # continuous development subset and contain all metadata categories present
-# in the 158-session source set.
+# in the 158-session source set. The audited map keeps a fact complete and
+# single: acknowledgements and same-fact follow-ups remain together, while a
+# genuinely independent fact or goal starts a new event.
 BOUNDARIES = {
-    2: [(17, 1)],
+    2: [(17, 1), (18, 2)],  # coffee fact -> new step-count topic
     4: [(17, 1)],
     5: [(18, 1)],
     6: [(15, 1)],
@@ -67,38 +69,46 @@ BOUNDARIES = {
 
 # First substantive unit after the opening pleasantries.  The greeting itself
 # remains in segment 1, while this unit starts the first useful interaction.
+# These are retained only where they do not split a single user fact from its
+# immediate conversational setup or answer.
 MAIN_STARTS = {
-    1: (3, 2), 2: (2, 3), 3: (3, 2), 4: (3, 2), 5: (3, 1),
-    6: (1, 2), 7: (3, 2), 8: (3, 2), 9: (3, 1), 10: (3, 2),
-    11: (3, 2), 12: (3, 1), 13: (3, 1), 14: (3, 2), 15: (3, 2),
-    16: (3, 2), 17: (3, 2), 18: (3, 2), 19: (2, 3), 20: (3, 1),
-    21: (1, 2), 22: (3, 2), 23: (3, 2), 24: (3, 1), 25: (3, 2),
-    26: (3, 2), 27: (3, 2), 28: (2, 3), 29: (3, 2), 30: (3, 1),
-    31: (3, 2), 32: (3, 2), 33: (3, 2), 34: (2, 3), 35: (4, 1),
-    36: (3, 2), 37: (3, 2), 38: (3, 2), 39: (3, 2), 40: (2, 1),
-    41: (5, 2), 42: (3, 1), 43: (3, 2), 44: (3, 2), 45: (4, 1),
+    1: (3, 2), 2: (2, 3), 3: (3, 2), 4: (3, 2), 5: (2, 3),
+    6: (1, 2), 7: (3, 2), 8: (3, 2), 9: (2, 3), 10: (3, 2),
+    11: (3, 2), 12: (2, 3), 13: (2, 3), 14: (4, 2), 15: (3, 2),
+    16: (3, 2), 17: (3, 2), 18: (3, 2), 19: (2, 3), 20: (2, 3),
+    21: (2, 3), 22: (3, 2), 23: (3, 2), 24: (2, 3), 25: (3, 2),
+    26: (3, 2), 27: (3, 2), 28: (2, 3), 29: (3, 2), 30: (2, 3),
+    31: (3, 2), 32: (3, 2), 33: (3, 2), 34: (2, 3), 35: (3, 2),
+    36: (3, 2), 37: (3, 2), 38: (3, 2), 39: (3, 2), 40: (2, 2),
+    41: (5, 2), 42: (2, 3), 43: (3, 2), 44: (3, 2), 45: (4, 1),
     46: (4, 2), 47: (3, 2), 48: (3, 1), 49: (3, 2), 50: (3, 2),
-    51: (3, 1), 52: (3, 1), 53: (5, 1), 54: (3, 1), 55: (3, 1),
-    56: (3, 1), 57: (3, 2), 58: (3, 1), 59: (3, 2), 60: (6, 2),
+    51: (2, 3), 52: (2, 3), 53: (5, 1), 54: (3, 2), 55: (2, 3),
+    56: (2, 3), 57: (3, 2), 58: (2, 3), 59: (3, 2), 60: (6, 2),
 }
 
 
 # First closing/farewell unit.  The last event is deliberately kept separate
 # so it can be filtered without removing the final substantive response.
 GOODBYE_STARTS = {
-    1: (21, 1), 2: (20, 1), 3: (10, 1), 4: (19, 1), 5: (22, 2),
-    6: (17, 1), 7: (13, 1), 8: (26, 1), 9: (13, 1), 10: (14, 1),
-    11: (22, 1), 12: (15, 1), 13: (13, 1), 14: (10, 1), 15: (14, 1),
+    1: (21, 1), 2: (21, 1), 3: (11, 1), 4: (19, 1), 5: (22, 2),
+    6: (17, 1), 7: (13, 1), 8: (28, 1), 9: (13, 1), 10: (14, 1),
+    11: (22, 1), 12: (15, 1), 13: (15, 1), 14: (10, 1), 15: (14, 2),
     16: (17, 2), 17: (14, 1), 18: (22, 1), 19: (21, 1), 20: (16, 1),
-    21: (16, 1), 22: (12, 1), 23: (15, 2), 24: (14, 1), 25: (12, 1),
-    26: (13, 2), 27: (20, 2), 28: (16, 1), 29: (21, 2), 30: (14, 1),
+    21: (17, 1), 22: (12, 1), 23: (15, 2), 24: (14, 1), 25: (12, 1),
+    26: (13, 3), 27: (20, 2), 28: (16, 1), 29: (21, 2), 30: (15, 3),
     31: (17, 1), 32: (12, 2), 33: (18, 1), 34: (18, 1), 35: (15, 1),
     36: (14, 1), 37: (12, 1), 38: (16, 1), 39: (11, 1), 40: (18, 1),
-    41: (14, 1), 42: (19, 1), 43: (17, 1), 44: (13, 1), 45: (14, 1),
-    46: (15, 1), 47: (19, 1), 48: (19, 1), 49: (26, 1), 50: (15, 1),
+    41: (14, 1), 42: (20, 1), 43: (17, 1), 44: (13, 1), 45: (14, 1),
+    46: (15, 1), 47: (19, 1), 48: (19, 1), 49: (27, 2), 50: (15, 1),
     51: (18, 1), 52: (17, 1), 53: (14, 1), 54: (11, 2), 55: (18, 1),
-    56: (18, 1), 57: (17, 2), 58: (9, 1), 59: (13, 2), 60: (15, 1),
+    56: (18, 1), 57: (17, 2), 58: (11, 2), 59: (13, 2), 60: (15, 1),
 }
+
+
+# Explicitly accepted exceptions from the human audit.  They are expressed
+# here so regeneration of the JSONL remains deterministic and reviewable.
+NO_MAIN_BOUNDARIES = {6}
+NO_GOODBYE_BOUNDARIES = {5, 12}
 
 
 _ABBREVIATIONS = {
@@ -214,22 +224,23 @@ def main() -> None:
             source = DATA_DIR / f"session_{session_id:04d}.json"
             data = json.loads(source.read_text(encoding="utf-8"))
             units = make_units(data["conversation"])
-            boundary_specs = [
-                (*MAIN_STARTS[session_id], "greeting_to_substantive"),
-                *[
-                    (*spec, "new_local_interaction_goal")
-                    for spec in BOUNDARIES.get(session_id, [])
-                ],
-                (*GOODBYE_STARTS[session_id], "substantive_to_goodbye"),
-            ]
+            boundary_specs = []
+            if session_id not in NO_MAIN_BOUNDARIES:
+                boundary_specs.append((*MAIN_STARTS[session_id], "greeting_to_substantive"))
+            boundary_specs.extend(
+                (*spec, "new_local_interaction_goal")
+                for spec in BOUNDARIES.get(session_id, [])
+            )
+            if session_id not in NO_GOODBYE_BOUNDARIES:
+                boundary_specs.append((*GOODBYE_STARTS[session_id], "substantive_to_goodbye"))
             segments, boundaries = build_segments(units, boundary_specs)
             record = {
                 "session_id": data["session_id"],
                 "source_file": str(source.relative_to(ROOT)),
                 "session_type": data.get("session_type"),
                 "operation": data.get("operation"),
-                "annotation_status": "initial_for_review",
-                "annotator": "assistant_initial",
+                "annotation_status": "reviewed",
+                "annotator": "assistant_audit_v2_full",
                 "units": units,
                 "boundaries": boundaries,
                 "segments": segments,
@@ -239,7 +250,7 @@ def main() -> None:
 
     review_index = OUT_DIR / "initial_60_review_index.md"
     with review_index.open("w", encoding="utf-8") as output:
-        output.write("# 初版 60 个 session 审核索引\n\n")
+        output.write("# 已审核的 60 个 session 标注索引\n\n")
         output.write("边界的右侧是新事件起点；`turn/sentence` 用于回到原始对话定位。\n\n")
         for record in records:
             units = record["units"]

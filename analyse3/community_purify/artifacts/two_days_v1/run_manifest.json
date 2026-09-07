@@ -1,0 +1,11 @@
+{
+  "created_at": "2026-09-06T00:07:49.686703+00:00",
+  "input_dir": "F:\\StreamEM\\analyse3\\graph\\experiment\\results\\two_days_v1",
+  "run": "knn_k10_tau0p50__leiden__r1p0",
+  "prompt": "F:\\StreamEM\\analyse3\\community_purify\\community_purify_prompt_v1.md",
+  "language": "zh",
+  "model": "gpt-5.6-luna",
+  "community_input_count": 20,
+  "node_count": 89,
+  "dry_run": false
+}

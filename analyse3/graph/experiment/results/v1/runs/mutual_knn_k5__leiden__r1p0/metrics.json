@@ -1,0 +1,151 @@
+{
+  "run_name": "mutual_knn_k5__leiden__r1p0",
+  "graph_rule": {
+    "name": "mutual_knn_k5",
+    "type": "mutual_knn",
+    "k": 5
+  },
+  "algorithm": "leiden",
+  "resolution": 1.0,
+  "embedding_model": "all-MiniLM-L6-v2",
+  "community_metrics": {
+    "pair_count": 1505,
+    "positive_count": 224,
+    "negative_count": 1281,
+    "tp": 149,
+    "fp": 152,
+    "tn": 1129,
+    "fn": 75,
+    "precision": 0.4950166112956811,
+    "recall": 0.6651785714285714,
+    "f1": 0.5676190476190477,
+    "overmerge_rate": 0.5049833887043189,
+    "oversplit_rate": 0.33482142857142855,
+    "uncertain_pair_count": 71,
+    "relation_counts": {
+      "same_broad_family": 432,
+      "same_memory_item": 143,
+      "same_project_different_aspect": 19,
+      "same_specific_topic": 81,
+      "shared_entity_only": 3,
+      "uncertain": 71,
+      "unrelated": 827
+    },
+    "same_community_by_relation": {
+      "same_broad_family": {
+        "count": 432,
+        "same_community_count": 108,
+        "same_community_rate": 0.25
+      },
+      "same_memory_item": {
+        "count": 143,
+        "same_community_count": 121,
+        "same_community_rate": 0.8461538461538461
+      },
+      "same_project_different_aspect": {
+        "count": 19,
+        "same_community_count": 0,
+        "same_community_rate": 0.0
+      },
+      "same_specific_topic": {
+        "count": 81,
+        "same_community_count": 28,
+        "same_community_rate": 0.345679012345679
+      },
+      "shared_entity_only": {
+        "count": 3,
+        "same_community_count": 0,
+        "same_community_rate": 0.0
+      },
+      "uncertain": {
+        "count": 71,
+        "same_community_count": 12,
+        "same_community_rate": 0.16901408450704225
+      },
+      "unrelated": {
+        "count": 827,
+        "same_community_count": 44,
+        "same_community_rate": 0.053204353083434096
+      }
+    }
+  },
+  "edge_metrics": {
+    "pair_count": 1505,
+    "positive_count": 224,
+    "negative_count": 1281,
+    "tp": 79,
+    "fp": 38,
+    "tn": 1243,
+    "fn": 145,
+    "precision": 0.6752136752136753,
+    "recall": 0.35267857142857145,
+    "f1": 0.4633431085043989,
+    "overmerge_rate": 0.3247863247863248,
+    "oversplit_rate": 0.6473214285714286
+  },
+  "graph_metrics": {
+    "node_count": 277,
+    "edge_count": 419,
+    "edge_density": 0.010961125935227332,
+    "mean_degree": 3.0252707581227436,
+    "median_degree": 3,
+    "max_degree": 5,
+    "isolated_node_count": 18,
+    "isolated_node_fraction": 0.06498194945848375,
+    "connected_component_count": 31,
+    "largest_component_size": 177,
+    "largest_component_fraction": 0.6389891696750902
+  },
+  "community_stats": {
+    "community_count": 43,
+    "largest_community_size": 28,
+    "largest_community_fraction": 0.10108303249097472,
+    "singleton_community_count": 18,
+    "singleton_community_fraction": 0.4186046511627907,
+    "community_sizes": [
+      28,
+      22,
+      19,
+      18,
+      17,
+      15,
+      13,
+      13,
+      12,
+      12,
+      11,
+      11,
+      8,
+      8,
+      8,
+      8,
+      7,
+      6,
+      6,
+      6,
+      3,
+      2,
+      2,
+      2,
+      2,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ]
+  }
+}

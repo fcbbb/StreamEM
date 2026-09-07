@@ -1,0 +1,12 @@
+{
+  "embedding_model": "all-MiniLM-L6-v2",
+  "embedding_backend": "sentence-transformers-local",
+  "device": null,
+  "pairs": "F:\\StreamEM\\analyse3\\anchor\\artifacts\\anchor_dataset_v1\\pair_candidates.jsonl",
+  "gold": "F:\\StreamEM\\analyse3\\anchor\\artifacts\\anchor_dataset_v1\\pair_gold_labels.jsonl",
+  "segment_gold": "F:\\StreamEM\\analyse3\\anchor\\artifacts\\anchor_dataset_v1\\segment_gold_labels.jsonl",
+  "precision_target": 0.95,
+  "methods": {
+    "v3": "F:\\StreamEM\\analyse3\\anchor\\artifacts\\anchor_dataset_v1\\output\\new_outputv3_full.jsonl"
+  }
+}

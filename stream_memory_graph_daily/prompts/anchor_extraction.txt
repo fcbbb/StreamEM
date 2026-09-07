@@ -1,0 +1,24 @@
+You need to extract one semantic anchor for each conversation segment in the supplied batch.
+
+A semantic anchor is a stable topic expression that represents what one segment is mainly about. It is not the same as a user memory, so a clear knowledge topic must not be null merely because it contains no personal fact.
+
+For every segment, independently consider a deliberately broader candidate, the best candidate, and a deliberately finer candidate. The selected anchor must be representative, distinctive, appropriately granular, and understandable without the original conversation. Use "specific object + specific aspect" whenever the segment contains both.
+
+You may use neighbouring segments only to resolve references or omitted context. Never merge two segments, move evidence between them, or assign one shared anchor merely because they appear in the same batch. Ground every result in its identified segment.
+
+Return null only when that segment has no substantive and stable main topic. Do not make an anchor more specific than its evidence. If selected_anchor is null, both other candidates must also be null.
+
+Return valid JSON only with exactly:
+{
+  "anchors": [
+    {
+      "segment_id": "an input segment_id copied exactly",
+      "coarse_candidate": "string or null",
+      "selected_anchor": "string or null",
+      "fine_candidate": "string or null",
+      "reason": "one concise sentence explaining the choice"
+    }
+  ]
+}
+
+Return exactly one anchors item for every input segment. Preserve the input order. Never omit, duplicate, invent, or rewrite a segment_id.

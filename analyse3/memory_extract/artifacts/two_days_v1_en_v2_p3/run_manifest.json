@@ -1,0 +1,9 @@
+{
+  "created_at": "2026-09-06T08:02:54.575587+00:00",
+  "input_dir": "F:\\StreamEM\\analyse3\\community_purify\\artifacts\\two_days_v1_en_v2",
+  "prompt": "analyse3\\memory_extract\\memory_extract_prompt_v3.md",
+  "language": "en",
+  "model": "gpt-5.6-luna",
+  "case_count": 20,
+  "dry_run": false
+}

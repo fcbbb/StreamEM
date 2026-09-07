@@ -1,0 +1,119 @@
+{
+  "run_name": "threshold_0p50__leiden__r1p0",
+  "graph_rule": {
+    "name": "threshold_0p50",
+    "type": "threshold",
+    "threshold": 0.5
+  },
+  "algorithm": "leiden",
+  "resolution": 1.0,
+  "embedding_model": "all-MiniLM-L6-v2",
+  "community_metrics": {
+    "pair_count": 42,
+    "positive_count": 4,
+    "negative_count": 38,
+    "tp": 4,
+    "fp": 3,
+    "tn": 35,
+    "fn": 0,
+    "precision": 0.5714285714285714,
+    "recall": 1.0,
+    "f1": 0.7272727272727273,
+    "overmerge_rate": 0.42857142857142855,
+    "oversplit_rate": 0.0,
+    "uncertain_pair_count": 0,
+    "relation_counts": {
+      "same_broad_family": 8,
+      "same_memory_item": 4,
+      "unrelated": 30
+    },
+    "same_community_by_relation": {
+      "same_broad_family": {
+        "count": 8,
+        "same_community_count": 3,
+        "same_community_rate": 0.375
+      },
+      "same_memory_item": {
+        "count": 4,
+        "same_community_count": 4,
+        "same_community_rate": 1.0
+      },
+      "unrelated": {
+        "count": 30,
+        "same_community_count": 0,
+        "same_community_rate": 0.0
+      }
+    }
+  },
+  "edge_metrics": {
+    "pair_count": 42,
+    "positive_count": 4,
+    "negative_count": 38,
+    "tp": 4,
+    "fp": 3,
+    "tn": 35,
+    "fn": 0,
+    "precision": 0.5714285714285714,
+    "recall": 1.0,
+    "f1": 0.7272727272727273,
+    "overmerge_rate": 0.42857142857142855,
+    "oversplit_rate": 0.0
+  },
+  "graph_metrics": {
+    "node_count": 44,
+    "edge_count": 12,
+    "edge_density": 0.012684989429175475,
+    "mean_degree": 0.5454545454545454,
+    "median_degree": 0,
+    "max_degree": 3,
+    "isolated_node_count": 28,
+    "isolated_node_fraction": 0.6363636363636364,
+    "connected_component_count": 35,
+    "largest_component_size": 4,
+    "largest_component_fraction": 0.09090909090909091
+  },
+  "community_stats": {
+    "community_count": 35,
+    "largest_community_size": 4,
+    "largest_community_fraction": 0.09090909090909091,
+    "singleton_community_count": 28,
+    "singleton_community_fraction": 0.8,
+    "community_sizes": [
+      4,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ]
+  }
+}

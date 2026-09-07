@@ -1,0 +1,89 @@
+{
+  "schema_version": "daily_memory_evaluation_report_v1",
+  "generated_at": "2026-09-07T04:00:39.675482+00:00",
+  "metadata": {
+    "persona": "academic_researcher",
+    "date_range": {
+      "start_date": "2025-06-01",
+      "end_date": "2025-06-07"
+    },
+    "total_questions": 15,
+    "memory_system": "stream_memory_graph_daily",
+    "memory_state_file": "F:\\StreamEM\\stream_memory_graph_daily\\evaluate\\artifacts\\memory_build\\memory_state.json",
+    "questions_file": "F:\\StreamEM\\stream_memory_graph_daily\\evaluate\\data\\evaluation_questions_academic_researcher.json",
+    "answer_model": null,
+    "judge_model": null,
+    "encoder_model": "all-MiniLM-L6-v2",
+    "top_k": 10,
+    "retrieval_only": true,
+    "skip_judge": false,
+    "use_proxy": true,
+    "selected_questions": 15
+  },
+  "overall_metrics": {
+    "total_questions": 15,
+    "answered_questions": 0,
+    "failed_questions": 0,
+    "retrieval_hit_questions": 15,
+    "total_evaluation_questions": 0,
+    "total_correct_evaluations": 0,
+    "overall_accuracy": null,
+    "memory_presence_total": 0,
+    "memory_presence_correct": 0,
+    "memory_presence_accuracy": null,
+    "forgetting_absence_total": 0,
+    "forgetting_absence_correct": 0,
+    "forgetting_absence_accuracy": null,
+    "fama": null
+  },
+  "by_task_type": {
+    "Reasoning": {
+      "total_questions": 5,
+      "answered_questions": 0,
+      "failed_questions": 0,
+      "retrieval_hit_questions": 5,
+      "total_evaluation_questions": 0,
+      "total_correct_evaluations": 0,
+      "overall_accuracy": null,
+      "memory_presence_total": 0,
+      "memory_presence_correct": 0,
+      "memory_presence_accuracy": null,
+      "forgetting_absence_total": 0,
+      "forgetting_absence_correct": 0,
+      "forgetting_absence_accuracy": null,
+      "fama": null
+    },
+    "Recommending": {
+      "total_questions": 5,
+      "answered_questions": 0,
+      "failed_questions": 0,
+      "retrieval_hit_questions": 5,
+      "total_evaluation_questions": 0,
+      "total_correct_evaluations": 0,
+      "overall_accuracy": null,
+      "memory_presence_total": 0,
+      "memory_presence_correct": 0,
+      "memory_presence_accuracy": null,
+      "forgetting_absence_total": 0,
+      "forgetting_absence_correct": 0,
+      "forgetting_absence_accuracy": null,
+      "fama": null
+    },
+    "Remembering": {
+      "total_questions": 5,
+      "answered_questions": 0,
+      "failed_questions": 0,
+      "retrieval_hit_questions": 5,
+      "total_evaluation_questions": 0,
+      "total_correct_evaluations": 0,
+      "overall_accuracy": null,
+      "memory_presence_total": 0,
+      "memory_presence_correct": 0,
+      "memory_presence_accuracy": null,
+      "forgetting_absence_total": 0,
+      "forgetting_absence_correct": 0,
+      "forgetting_absence_accuracy": null,
+      "fama": null
+    }
+  }
+}

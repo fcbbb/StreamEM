@@ -8,5 +8,5 @@ ANNOTATION_FILE = CUTTING_ROOT / "annotations" / "initial_60.jsonl"
 DEFAULT_OUTPUT_DIR = CUTTING_ROOT / "artifacts" / "cutting_opencode_go"
 PROJECT_ENV_FILE = REPO_ROOT / ".env"
 
-PROMPT_VERSION = "conversation-cutting-en-v5-general-boundary-functions"
+PROMPT_VERSION = "conversation-cutting-en-v2-fact-single"
 DEFAULT_MODEL = "gpt-5.6-luna"

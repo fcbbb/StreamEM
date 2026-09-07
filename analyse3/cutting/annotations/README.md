@@ -1,7 +1,7 @@
-# 初版人工标注（60 个 session）
+# 人工审计标注（60 个 session）
 
 `initial_60.jsonl` 是对 `data/conversations/session_0001.json` 至
-`session_0060.json` 的第一版事件切割标注，供人工审核，不是最终 gold label。
+`session_0060.json` 的完整规则重标版本，仍不是最终多标注者 gold label。
 
 每行对应一个 session，包含：
 
@@ -13,4 +13,4 @@
 
 切割依据与实验方案一致：右侧是否开启了可以相对独立理解的新交互目标。问答追问、澄清、补充条件、同一项目的字段收集都保留在同一事件中；明确转向活动记录、目标/偏好操作或新的独立主题时切开。`no_memory` session 若没有明确转场则标为一个事件。
 
-当前开发集选择连续的前 60 个 session，覆盖所有 session 类型和 add/update/delete 操作。审核时直接修改 `initial_60.jsonl` 中对应行，并将 `annotation_status` 改为 `reviewed`；建议保留 `initial_reason`，另在 `review_notes` 中记录边界争议和修改理由。
+当前开发集选择连续的前 60 个 session，覆盖所有 session 类型和 add/update/delete 操作。本次完整重标的核心原则是事实级纯度：事实内容要完整且单一；同一事实或局部目标下的助手附和、追问和回答可以保留在同一事件中；只有出现另一个独立事实或目标时才切开。goodbye 是否单独切开不是核心判据，只要不破坏事实完整性即可。对于助手问题与用户回答，不在两者之间切开；但用户明确转入独立事实时，事实仍从用户事实起点单独切开。`initial_reason` 保留用于说明边界来源。

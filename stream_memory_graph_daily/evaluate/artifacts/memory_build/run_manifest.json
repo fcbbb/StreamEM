@@ -1,0 +1,44 @@
+{
+  "schema_version": "daily_memory_build_manifest_v1",
+  "updated_at": "2026-09-06T15:01:28.617420+00:00",
+  "state_file": "F:\\StreamEM\\stream_memory_graph_daily\\evaluate\\artifacts\\memory_build\\memory_state.json",
+  "progress_file": "F:\\StreamEM\\stream_memory_graph_daily\\evaluate\\artifacts\\memory_build\\progress.json",
+  "pipeline_schema": "daily_topic_memory_graph_v1",
+  "config": {
+    "knn_k": 10,
+    "new_new_threshold": 0.5,
+    "new_memory_threshold": 0.5,
+    "resolution": 1.0,
+    "community_seed": 42,
+    "assignment_min_support": 0.35,
+    "assignment_margin": 0.08,
+    "path_decay": 1.0,
+    "max_assignment_hops": 8,
+    "llm_retries": 3
+  },
+  "stats": {
+    "schema_version": "daily_topic_memory_graph_v1",
+    "segments": 299,
+    "segment_statuses": {
+      "compressed": 245,
+      "no_memory": 36,
+      "active": 3,
+      "boundary": 15
+    },
+    "memories": 84,
+    "active_nodes": 102,
+    "active_edges": 70,
+    "boundaries": 15,
+    "pending_segments": 0,
+    "checkpoints": 7,
+    "current_date": "2025-06-07",
+    "last_checkpoint_date": "2025-06-07",
+    "llm_errors": 22,
+    "memory_relations_enabled": false
+  },
+  "conversation_directory": "F:\\StreamEM\\stream_memory_graph_daily\\evaluate\\data\\conversations",
+  "selected_session_count": 158,
+  "llm_model": "gpt-5.6-luna",
+  "encoder_model": "all-MiniLM-L6-v2",
+  "use_proxy": false
+}

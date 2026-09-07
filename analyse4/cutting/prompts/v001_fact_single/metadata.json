@@ -1,0 +1,7 @@
+{
+  "version": "v001_fact_single",
+  "status": "baseline",
+  "description": "Baseline coarse event cutting with complete, single facts and local interaction goals.",
+  "created_from": "analyse3/cutting/cutting_pipeline/prompt.py",
+  "notes": "Copy this directory to create v002_...; edit system.txt or user_template.txt only in the new directory."
+}
