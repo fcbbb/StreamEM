@@ -25,3 +25,13 @@ analyse3/graph/experiment/results/
 analyse3/memory_extract/artifacts/
 analyse4/cutting/runs/
 stream_memory_graph_daily/evaluate/artifacts/
+
+# Keep human-maintained annotations and documentation under ignored output trees
+!analyse3/community_purify/artifacts/
+!analyse3/community_purify/artifacts/two_days_v1/
+!analyse3/community_purify/artifacts/two_days_v1/topic_annotations.jsonl
+!analyse3/community_purify/artifacts/two_days_v1/topic_annotations_README.md
+!analyse3/graph/experiment/results/
+!analyse3/graph/experiment/results/README.md
+!analyse4/cutting/runs/
+!analyse4/cutting/runs/README.md
