@@ -13,3 +13,15 @@ analyse3/cutting/artifacts/*/run_manifest.json
 analyse3/cutting/artifacts/*/evaluation.json
 analyse3/cutting/artifacts/*/evaluation.md
 analyse3/anchor/artifacts/*/pilot_v1/anchor_outputs*.jsonl
+
+# Generated experiment outputs and run artifacts
+**/output/
+**/outputs/
+analyse3/anchor/artifacts/anchor_dataset_v1/pilot_v1/resegmented_boundary_test_outputs*.jsonl
+analyse3/anchor/artifacts/anchor_dataset_v1/pilot_v1/anchor_similarity_eval_*/
+analyse3/community_purify/artifacts/
+analyse3/cutting/artifacts/
+analyse3/graph/experiment/results/
+analyse3/memory_extract/artifacts/
+analyse4/cutting/runs/
+stream_memory_graph_daily/evaluate/artifacts/
