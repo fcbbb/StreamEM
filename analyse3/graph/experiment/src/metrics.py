@@ -87,6 +87,11 @@ def community_pair_metrics(
             definite_pred.append(pred)
 
     metrics = _binary_metrics(definite_true, definite_pred)
+    metrics["same_topic_recall"] = metrics["recall"]
+    negative_count = metrics["negative_count"]
+    metrics["cross_topic_community_rate"] = (
+        metrics["fp"] / negative_count if negative_count else None
+    )
     metrics["uncertain_pair_count"] = relation_counts.get("uncertain", 0)
     metrics["relation_counts"] = dict(sorted(relation_counts.items()))
     metrics["same_community_by_relation"] = {
@@ -115,4 +120,10 @@ def edge_pair_metrics(
             continue
         y_true.append(bool(row["same_specific_topic"]))
         y_pred.append((min(left, right), max(left, right)) in edge_set)
-    return _binary_metrics(y_true, y_pred)
+    metrics = _binary_metrics(y_true, y_pred)
+    metrics["same_topic_edge_recall"] = metrics["recall"]
+    negative_count = metrics["negative_count"]
+    metrics["cross_topic_edge_rate"] = (
+        metrics["fp"] / negative_count if negative_count else None
+    )
+    return metrics
