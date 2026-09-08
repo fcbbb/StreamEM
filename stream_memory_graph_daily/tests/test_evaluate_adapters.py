@@ -22,6 +22,17 @@ from stream_memory_graph_daily.pipeline import DailyMemoryGraph
 
 class EvaluationFakeLLM:
     def complete(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        if system_prompt.startswith("Conservatively partition one graph community"):
+            payload = json.loads(user_prompt.split("INPUT DATA\n", 1)[1])
+            return {
+                "groups": [{
+                    "group_id": "g1",
+                    "node_ids": [
+                        *[row["node_id"] for row in payload["memory_nodes"]],
+                        *[row["node_id"] for row in payload["segment_nodes"]],
+                    ],
+                }]
+            }
         if system_prompt.startswith("You are segmenting a conversation"):
             units = json.loads(user_prompt.split("conversation:\n\n", 1)[1])
             return {

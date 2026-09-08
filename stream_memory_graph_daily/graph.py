@@ -34,6 +34,13 @@ class ActiveGraph:
         self.vectors: dict[str, np.ndarray] = {}
         self.member_vectors: dict[str, np.ndarray] = {}
         self.graph = nx.Graph()
+        # Pairs separated by community purification must not be recreated by
+        # incremental updates or state restoration.
+        self.blocked_edges: set[tuple[str, str]] = set()
+
+    @staticmethod
+    def _edge_key(left: str, right: str) -> tuple[str, str]:
+        return tuple(sorted((left, right)))
 
     def add_node(
         self,
@@ -94,12 +101,47 @@ class ActiveGraph:
         self.add_memory(memory_id, topic, members)
 
     def remove_nodes(self, node_ids: set[str] | list[str]) -> None:
+        removed = set(node_ids)
         for node_id in node_ids:
             self.nodes.pop(node_id, None)
             self.vectors.pop(node_id, None)
             self.member_vectors.pop(node_id, None)
             if self.graph.has_node(node_id):
                 self.graph.remove_node(node_id)
+        self.blocked_edges = {
+            edge for edge in self.blocked_edges if not (set(edge) & removed)
+        }
+
+    def cut_cross_group_edges(self, groups: list[set[str]]) -> list[dict[str, Any]]:
+        """Remove stale edges between nodes the purifier placed in different groups.
+
+        Purification is authoritative for the current community.  Keeping an
+        old memory-segment or segment-segment bridge would allow the next
+        incremental planning pass to immediately reassemble the split groups.
+        Nodes themselves remain active; only those stale cross-group edges are
+        removed.
+        """
+
+        removed: list[dict[str, Any]] = []
+        normalized = [set(group) for group in groups if group]
+        for index, left_group in enumerate(normalized):
+            for right_group in normalized[index + 1 :]:
+                for left in sorted(left_group):
+                    for right in sorted(right_group):
+                        if not self.graph.has_edge(left, right):
+                            self.blocked_edges.add(self._edge_key(left, right))
+                            continue
+                        data = self.graph.get_edge_data(left, right) or {}
+                        removed.append(
+                            {
+                                "left": min(left, right),
+                                "right": max(left, right),
+                                "weight": float(data.get("weight", 0.0)),
+                            }
+                        )
+                        self.graph.remove_edge(left, right)
+                        self.blocked_edges.add(self._edge_key(left, right))
+        return removed
 
     def node_kind(self, node_id: str) -> NodeKind:
         return self.nodes[node_id].kind
@@ -124,8 +166,10 @@ class ActiveGraph:
         if members is None or len(members) == 0:
             return topic_score
         member_scores = members @ self.vectors[segment_id]
-        max_member_score = float(np.max(member_scores))
-        base_score = max(topic_score, max_member_score)
+        # The memory topic is the stable semantic identity. Historical member
+        # anchors can provide supporting votes, but one accidentally broad or
+        # contaminated member must not replace the topic as the base score.
+        base_score = topic_score
         supporting_scores = member_scores[
             member_scores >= self.config.new_memory_threshold
         ]
@@ -157,6 +201,8 @@ class ActiveGraph:
         candidates: list[tuple[float, str]] = []
         for other_id in sorted(self.nodes):
             if other_id == node_id:
+                continue
+            if self._edge_key(node_id, other_id) in self.blocked_edges:
                 continue
             if node_kind == "memory" and self.node_kind(other_id) != "segment":
                 continue
@@ -200,6 +246,8 @@ class ActiveGraph:
         pair_scores: dict[tuple[str, str], float] = {}
         for index, left in enumerate(ids):
             for right in ids[index + 1 :]:
+                if self._edge_key(left, right) in self.blocked_edges:
+                    continue
                 threshold = self._threshold(left, right)
                 if threshold is None:
                     continue
@@ -228,13 +276,27 @@ class ActiveGraph:
         return {
             "nodes": [node.to_dict() for node in sorted(self.nodes.values(), key=lambda n: n.node_id)],
             "edges": self.edge_rows(),
+            "blocked_edges": [list(edge) for edge in sorted(self.blocked_edges)],
         }
 
-    def restore_nodes(self, rows: list[dict[str, Any]]) -> None:
+    def restore_nodes(
+        self,
+        rows: list[dict[str, Any]],
+        blocked_edges: list[list[str]] | None = None,
+    ) -> None:
         self.nodes.clear()
         self.vectors.clear()
         self.member_vectors.clear()
         self.graph.clear()
+        self.blocked_edges = {
+            self._edge_key(str(row[0]), str(row[1]))
+            for row in (blocked_edges or [])
+            if isinstance(row, list)
+            and len(row) == 2
+            and str(row[0]).strip()
+            and str(row[1]).strip()
+            and str(row[0]) != str(row[1])
+        }
         for row in rows:
             self.add_node(
                 str(row["node_id"]),

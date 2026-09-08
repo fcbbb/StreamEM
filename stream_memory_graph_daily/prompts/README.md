@@ -15,7 +15,7 @@
 - `anchor_extraction.txt`：由锚点模块一次追加同一切割窗口产生的全部 segment；模型必须按 `segment_id` 原序返回一项一锚点，调用方会拒绝缺失、重复或虚构 ID；
 - `memory_extraction.txt`：由记忆模块追加纯化后的单主题社区；
 - `memory_fusion.txt`：由记忆模块追加完整的 existing memory 和新 segment group。
-- `community_purification.txt`：由 checkpoint 阶段追加一个已完成固定 memory 拆分和 boundary 排除的 community；模型可以保守地返回一个或多个 segment group。
+- `community_purification.txt`：由 checkpoint 阶段追加一个已完成固定 memory 拆分和 boundary 排除的 community；输入同时包含已有 memory 节点和新 segment 节点，模型可以返回一个或多个 node group，并把不属于已有 memory 的 segment 分到无 memory 的新主题 group。拆分得到的单 segment group 由调用方保留在 active graph，不再调用 extraction/fusion；拆分组之间的旧图边也会被切断。
 
 Prompt 返回结果仍会由调用方执行严格 JSON 字段、稳定 ID 和来源可追溯性验证。
 

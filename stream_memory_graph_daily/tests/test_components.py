@@ -92,7 +92,7 @@ class ComponentTests(unittest.TestCase):
             store.add(MemoryRelation("m1", "m2", "related"))
         self.assertEqual(store.to_dict(), {"enabled": False, "relations": []})
 
-    def test_memory_supernode_rewards_member_consensus(self) -> None:
+    def test_memory_topic_is_base_and_member_consensus_is_only_support(self) -> None:
         encoder = VectorEncoder({
             "broad topic": [0.0, 1.0],
             "matching new segment": [1.0, 0.0],
@@ -105,7 +105,7 @@ class ComponentTests(unittest.TestCase):
         })
         active = ActiveGraph(
             encoder,
-            DailyGraphConfig(new_memory_threshold=0.7),
+            DailyGraphConfig(new_memory_threshold=0.5),
         )
         active.add_memory(
             "m-minority",
@@ -122,10 +122,9 @@ class ComponentTests(unittest.TestCase):
 
         minority_score = active.similarity("m-minority", "s1")
         majority_score = active.similarity("m-majority", "s1")
-        self.assertGreater(minority_score, 0.8)
+        self.assertAlmostEqual(minority_score, 0.20, places=6)
         self.assertGreater(majority_score, minority_score)
-        self.assertAlmostEqual(minority_score, 0.84, places=6)
-        self.assertAlmostEqual(majority_score, 0.92, places=6)
+        self.assertAlmostEqual(majority_score, 0.60, places=6)
         self.assertTrue(active.graph.has_edge("m-majority", "s1"))
 
     def test_new_segment_uses_incremental_top_k_without_global_rescan(self) -> None:
@@ -149,6 +148,33 @@ class ComponentTests(unittest.TestCase):
         self.assertTrue(active.graph.has_edge("s1", "s3"))
         self.assertTrue(active.graph.has_edge("s1", "s2"))
         self.assertFalse(active.graph.has_edge("s2", "s3"))
+
+    def test_cut_cross_group_edges_keeps_nodes_active(self) -> None:
+        encoder = VectorEncoder({
+            "segment one": [1.0, 0.0],
+            "segment two": [0.99, 0.01],
+        })
+        active = ActiveGraph(
+            encoder,
+            DailyGraphConfig(new_new_threshold=0.2, new_memory_threshold=0.2),
+        )
+        active.add_segment("s1", "segment one")
+        active.add_segment("s2", "segment two")
+        self.assertTrue(active.graph.has_edge("s1", "s2"))
+
+        removed = active.cut_cross_group_edges([{"s1"}, {"s2"}])
+
+        self.assertEqual([row["left"] for row in removed], ["s1"])
+        self.assertFalse(active.graph.has_edge("s1", "s2"))
+        self.assertEqual(active.segment_ids(), {"s1", "s2"})
+
+        restored = ActiveGraph(
+            encoder,
+            DailyGraphConfig(new_new_threshold=0.2, new_memory_threshold=0.2),
+        )
+        payload = active.to_dict()
+        restored.restore_nodes(payload["nodes"], payload["blocked_edges"])
+        self.assertFalse(restored.graph.has_edge("s1", "s2"))
 
     def test_new_memory_only_connects_to_active_segments(self) -> None:
         encoder = VectorEncoder({

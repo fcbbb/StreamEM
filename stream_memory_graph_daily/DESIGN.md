@@ -25,10 +25,7 @@ weight(memory, segment)
     + (1 - base) × coverage × support_strength
 
 base
-  = max(
-      similarity(memory.topic, segment.anchor),
-      max similarity(memory 的历史成员 anchor, segment.anchor)
-    )
+  = similarity(memory.topic, segment.anchor)
 
 coverage
   = 达到 new_memory_threshold 的历史成员数量 / 历史成员总数
@@ -37,7 +34,7 @@ support_strength
   = 达到阈值的历史成员相似度平均值
 ```
 
-最大值负责保留细粒度历史事件的召回能力；覆盖率和平均支持强度则让大多数成员都相似时的超节点边高于普通单条边。成员按 `source_segments` 一一取回 anchor 并分别计票，即使多个 segment 的 anchor 文本相同也不会被去重。成员共识计算复用现有 `new_memory_threshold`，不引入额外超参数。当前仍是一层图：历史成员不恢复为活动节点，聚合计算只形成一条 `memory-segment` 边。
+`memory.topic` 是 memory 的稳定语义身份，历史成员 anchor 只能作为共识支持，不能替换 topic 作为 base。成员按 `source_segments` 一一取回 anchor 并分别计票，即使多个 segment 的 anchor 文本相同也不会被去重。成员共识计算复用现有 `new_memory_threshold`，不引入额外超参数。当前仍是一层图：历史成员不恢复为活动节点，聚合计算只形成一条 `memory-segment` 边。
 
 社区成功压缩后，原始证据仍保存在 `SegmentRecord` 以及 memory 的来源字段中，但不再作为活动图节点参与下一轮社区检测。
 
@@ -68,16 +65,22 @@ boundary segment 会继续留在活动图中，但不会进入任何 memory 的�
 
 ## 社区纯化
 
-固定 memory 拆分和 boundary 标记完成后，尚未归档的每个 planned community 会进入 `CommunityPurifier`。多 segment community 调用 `community_purification.txt`，要求模型保守判断这些 segment 是否存在自然且有信息量的共同父主题；不需要拆分时返回一个 group，需要拆分时返回多个 group。单 segment community 不调用 LLM，但会写入 `skipped_singleton` 审计记录。
+固定 memory 拆分和 boundary 标记完成后，尚未归档的每个 planned community 会进入 `CommunityPurifier`。纯化输入同时包含 community 中的已有 memory 节点和新 segment 节点；memory 提供 topic、summary、结构化内容和历史 anchor，segment 提供 anchor 与原文。模型需要判断 memory 与新 segment 是否有自然且有信息量的共同父主题，而不是因为存在图边就强制融合。
+
+只有完全不包含已有 memory、且只有一个新 segment 的新主题 singleton 才跳过 LLM。只要 community 包含已有 memory，即使只有一个新 segment，也必须执行纯化判断。
+
+纯化可以把新 segment 与已有 memory 分开：不含 memory 的 group 进入新的 memory extraction；只含已有 memory、不含新 segment 的 group 表示保留原 memory 不变；同时包含 memory 和 segment 的 group 才进入 memory fusion。若纯化确实把一个 community 拆成多个 group，其中某个 group 只有一个新 segment，则该 singleton 只保留在 active graph 中，跳过 extraction/fusion，等待后续新 segment 提供更多社区证据；它不会被归档为 `no_memory`，也不会从图中删除。
+
+纯化拆分后会立即删除不同 purified group 之间原有的 memory-segment 和 segment-segment 边，节点本身仍保留。这样旧图边不会在下一轮增量社区检测中把模型刚拆开的 group 重新连回去；未来新 segment 仍可通过新的增量边重新建立合理连接。
 
 纯化调用方严格验证：
 
 - 输出只能包含 `groups`；
-- 每个 group 只能包含 `group_id` 和 `segment_ids`；
-- 每个输入 `segment_id` 必须且只能出现一次；
-- 不允许删除、生成或重复 segment。
+- 每个 group 只能包含 `group_id` 和 `node_ids`；
+- 每个输入 memory/segment `node_id` 必须且只能出现一次；
+- 不允许删除、生成或重复 memory/segment 节点。
 
-纯化结果会写入 `stage_audit` 的 `llm_call`、`normalized_result` 和 `applied` 事件，并在 `trace` 中写入紧凑的 `community_purified` 事件。每个 purified group 随后独立进入 memory extraction 或 memory fusion。对于原本已有一个 memory 的 community，拆出的 group 继续继承该 memory 身份，但以独立的 segment 子集分别执行 fusion。
+纯化结果会写入 `stage_audit` 的 `llm_call`、`normalized_result` 和 `applied` 事件，并在 `trace` 中写入紧凑的 `community_purified` 事件；拆分产生的跨 group 边删除会单独记录为 `edges_cut`。每个 purified group 随后根据其节点组成独立处理：无 memory 且包含多个 segment 的 group 进入 memory extraction；有一个 memory 且包含 segment 的 group 进入 memory fusion；memory-only group 保持原 memory 不变；拆分产生的单 segment group 仅记录 `skipped_singleton` 并保持 active。
 
 纯化失败时，原 community 的 segment 全部保留 active 并进入 retry；纯化成功但某个 group 的 memory 操作失败时，只重试该 group 的 segment。
 

@@ -52,14 +52,15 @@ class MemoryFakeLLM:
         return json.loads(user_prompt.split("INPUT DATA\n", 1)[1])
 
     def complete(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
-        if system_prompt.startswith("Conservatively split the segments"):
+        if system_prompt.startswith("Conservatively partition one graph community"):
             payload = self._payload(user_prompt)
             return {
                 "groups": [
                     {
                         "group_id": "g1",
-                        "segment_ids": [
-                            segment["segment_id"] for segment in payload["segments"]
+                        "node_ids": [
+                            *[memory["node_id"] for memory in payload["memory_nodes"]],
+                            *[segment["node_id"] for segment in payload["segment_nodes"]],
                         ],
                     }
                 ]
@@ -204,12 +205,12 @@ class DailyPipelineTests(unittest.TestCase):
     def test_community_purification_can_split_before_memory_extraction(self) -> None:
         class SplittingLLM(MemoryFakeLLM):
             def complete(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
-                if system_prompt.startswith("Conservatively split the segments"):
+                if system_prompt.startswith("Conservatively partition one graph community"):
                     payload = self._payload(user_prompt)
                     return {
                         "groups": [
-                            {"group_id": "g1", "segment_ids": [payload["segments"][0]["segment_id"]]},
-                            {"group_id": "g2", "segment_ids": [payload["segments"][1]["segment_id"]]},
+                            {"group_id": "g1", "node_ids": [payload["segment_nodes"][0]["node_id"]]},
+                            {"group_id": "g2", "node_ids": [payload["segment_nodes"][1]["node_id"]]},
                         ]
                     }
                 return super().complete(system_prompt, user_prompt)
@@ -247,15 +248,15 @@ class DailyPipelineTests(unittest.TestCase):
 
         result = pipeline.finalize()
 
-        self.assertEqual(llm.extractions, 2)
-        self.assertEqual(len(pipeline.memories), 2)
+        self.assertEqual(llm.extractions, 0)
+        self.assertEqual(len(pipeline.memories), 0)
         self.assertEqual(
             {pipeline.segments[segment_id].status for segment_id in ("s1", "s2")},
-            {"compressed"},
+            {"active"},
         )
         self.assertEqual(
             [row["action"] for row in result["changes"]],
-            ["memory_created", "memory_created"],
+            ["singleton_kept_active", "singleton_kept_active"],
         )
         purification_actions = {
             row["action"]
@@ -265,6 +266,71 @@ class DailyPipelineTests(unittest.TestCase):
         self.assertIn("llm_call", purification_actions)
         self.assertIn("normalized_result", purification_actions)
         self.assertIn("applied", purification_actions)
+
+    def test_memory_and_single_segment_are_purified_as_two_nodes(self) -> None:
+        class DetachingLLM(MemoryFakeLLM):
+            def complete(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+                if system_prompt.startswith("Conservatively partition one graph community"):
+                    payload = self._payload(user_prompt)
+                    self.asserted_memory_nodes = payload["memory_nodes"]
+                    return {
+                        "groups": [
+                            {"group_id": "keep-memory", "node_ids": [
+                                payload["memory_nodes"][0]["node_id"]
+                            ]},
+                            {"group_id": "new-topic", "node_ids": [
+                                payload["segment_nodes"][0]["node_id"]
+                            ]},
+                        ]
+                    }
+                return super().complete(system_prompt, user_prompt)
+
+        llm = DetachingLLM()
+        pipeline = DailyMemoryGraph(
+            llm=llm, encoder=VectorEncoder(self.vectors), config=self.config
+        )
+        existing = MemoryRecord("m-existing", "Coffee spending", "Existing coffee memory")
+        pipeline.memories = {existing.memory_id: existing}
+        pipeline.active_graph.add_memory(existing.memory_id, existing.topic)
+
+        class FixedPlanner:
+            def plan(self, active: Any, focus_node_ids: set[str] | None = None) -> CommunityPlan:
+                return CommunityPlan(
+                    communities=[PlannedCommunity(
+                        "community:existing-plus-new",
+                        {"m-existing"},
+                        {"new"},
+                        "fixed_test",
+                    )],
+                    boundaries={},
+                    cannot_link_memory_pairs=set(),
+                    detected_communities=[{"m-existing", "new"}],
+                    affected_node_ids={"m-existing", "new"},
+                )
+
+        pipeline.planner = FixedPlanner()
+        pipeline.ingest_segment(
+            SegmentRecord("new", "A new topic.", "coffee price", "2025-06-01")
+        )
+        result = pipeline.finalize()
+
+        self.assertEqual(llm.asserted_memory_nodes[0]["node_id"], "m-existing")
+        self.assertEqual(llm.fusions, 0)
+        self.assertEqual(llm.extractions, 0)
+        self.assertEqual(pipeline.segments["new"].status, "active")
+        self.assertIsNone(pipeline.segments["new"].memory_id)
+        self.assertIn("new", pipeline.active_graph.nodes)
+        self.assertNotIn("m-existing", pipeline.active_graph.graph["new"])
+        self.assertTrue(any(
+            row.get("action") == "llm_call"
+            and row.get("stage") == "community_purification"
+            for row in pipeline.stage_audit
+        ))
+        self.assertTrue(any(
+            row.get("action") == "edges_cut"
+            and row.get("stage") == "community_purification"
+            for row in pipeline.stage_audit
+        ))
 
     def test_ambiguous_segment_becomes_boundary_without_fusion(self) -> None:
         llm = MemoryFakeLLM()

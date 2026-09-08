@@ -523,8 +523,14 @@ class DailyMemoryGraph:
                 continue
             segments = [self.segments[segment_id] for segment_id in sorted(segment_ids)]
             try:
+                existing_memories = [
+                    self.memories[memory_id]
+                    for memory_id in sorted(group.memory_ids)
+                ]
                 purified_groups = self.community_purifier.purify(
-                    group.community_id, segments
+                    group.community_id,
+                    segments,
+                    existing_memories,
                 )
             except Exception as exc:
                 retry_ids.update(segment_ids)
@@ -549,6 +555,8 @@ class DailyMemoryGraph:
             purification_output = [
                 {
                     "group_id": purified.group_id,
+                    "node_ids": list(purified.node_ids),
+                    "memory_ids": list(purified.memory_ids),
                     "segment_ids": list(purified.segment_ids),
                 }
                 for purified in purified_groups
@@ -561,6 +569,7 @@ class DailyMemoryGraph:
                     "parent_community_id": group.community_id,
                     "memory_ids": sorted(group.memory_ids),
                     "input_segment_ids": sorted(segment_ids),
+                    "input_memory_ids": sorted(group.memory_ids),
                     "output_groups": purification_output,
                 },
             )
@@ -571,13 +580,69 @@ class DailyMemoryGraph:
                 output_groups=purification_output,
             )
 
+            purification_was_split = len(purified_groups) > 1
+            if purification_was_split:
+                removed_edges = self.active_graph.cut_cross_group_edges(
+                    [set(purified.node_ids) for purified in purified_groups]
+                )
+                if removed_edges:
+                    self._audit_stage(
+                        "community_purification",
+                        "edges_cut",
+                        {
+                            "checkpoint_date": checkpoint_date,
+                            "parent_community_id": group.community_id,
+                            "removed_edges": removed_edges,
+                        },
+                    )
+                    self._trace(
+                        "community_purification_edges_cut",
+                        community_id=group.community_id,
+                        removed_edges=removed_edges,
+                    )
+
             for purified in purified_groups:
                 purified_segment_ids = set(purified.segment_ids)
+                purified_memory_ids = set(purified.memory_ids)
+                if not purified_segment_ids:
+                    # A memory-only purification group is the explicit
+                    # "keep existing memory" outcome.
+                    continue
+                if purification_was_split and not purified_memory_ids and len(purified_segment_ids) == 1:
+                    # A singleton produced by purification has no remaining
+                    # community evidence. Keep it active for a future
+                    # community, but do not call extraction/fusion on it.
+                    changes.append(
+                        {
+                            "community_id": stable_group_id(purified_segment_ids),
+                            "parent_community_id": group.community_id,
+                            "purification_group_id": purified.group_id,
+                            "source": f"{group.source}:purified",
+                            "action": "singleton_kept_active",
+                            "segment_ids": sorted(purified_segment_ids),
+                        }
+                    )
+                    self._audit_stage(
+                        "memory_apply",
+                        "skipped_singleton",
+                        {
+                            "checkpoint_date": checkpoint_date,
+                            "community_id": stable_group_id(purified_segment_ids),
+                            "parent_community_id": group.community_id,
+                            "purification_group_id": purified.group_id,
+                            "reason": "purification_split_singleton_kept_active",
+                            "input": {
+                                "segment_ids": sorted(purified_segment_ids),
+                                "memory_ids": [],
+                            },
+                        },
+                    )
+                    continue
                 purified_group = PlannedCommunity(
                     community_id=stable_group_id(
-                        group.memory_ids | purified_segment_ids
+                        purified_memory_ids | purified_segment_ids
                     ),
-                    memory_ids=set(group.memory_ids),
+                    memory_ids=purified_memory_ids,
                     segment_ids=purified_segment_ids,
                     source=f"{group.source}:purified",
                 )
@@ -884,8 +949,12 @@ class DailyMemoryGraph:
         instance.trace = list(payload.get("trace", []))
         instance.stage_audit = list(payload.get("stage_audit", []))
         instance.llm_errors = list(payload.get("llm_errors", []))
-        nodes = payload.get("active_graph", {}).get("nodes", [])
-        instance.active_graph.restore_nodes(nodes)
+        active_graph_payload = payload.get("active_graph", {})
+        nodes = active_graph_payload.get("nodes", [])
+        instance.active_graph.restore_nodes(
+            nodes,
+            active_graph_payload.get("blocked_edges", []),
+        )
         for memory_id, memory in instance.memories.items():
             instance.active_graph.update_memory_topic(
                 memory_id,
