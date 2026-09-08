@@ -636,7 +636,7 @@ class DailyMemoryGraph:
     def retrieve(self, query: str, k: int = 10) -> list[dict[str, Any]]:
         if k < 1:
             return []
-        if not self.memories:
+        if not self.active_graph.nodes:
             return []
 
         def memory_fields(memory: MemoryRecord) -> list[str]:
@@ -648,20 +648,55 @@ class DailyMemoryGraph:
             )
             return [value for value in fields if value.strip()]
 
-        memory_rows = []
+        def node_fields(node_id: str) -> list[str]:
+            node = self.active_graph.nodes[node_id]
+            if node.kind == "memory":
+                memory = self.memories.get(node_id)
+                if memory is not None:
+                    return memory_fields(memory)
+                return [node.representation]
+            segment = self.segments.get(node_id)
+            if segment is None:
+                return [node.representation]
+            return [value for value in (segment.text, segment.anchor) if value.strip()]
+
+        node_rows = []
         semantic_texts: list[str] = []
         semantic_owner_ids: list[str] = []
         lexical_documents: list[tuple[str, str]] = []
         entity_documents: dict[str, str] = {}
-        for memory_id, memory in sorted(self.memories.items()):
-            fields = memory_fields(memory)
+        for node_id in sorted(self.active_graph.nodes):
+            node = self.active_graph.nodes[node_id]
+            fields = node_fields(node_id)
             lexical_document = " ".join(fields)
-            memory_rows.append({"memory_id": memory_id, "memory": memory})
-            lexical_documents.append((memory_id, lexical_document))
-            entity_documents[memory_id] = lexical_document
+            row = {
+                "id": node_id if node.kind == "memory" else f"segment:{node_id}",
+                "node_id": node_id,
+                "kind": node.kind,
+            }
+            if node.kind == "memory":
+                memory = self.memories.get(node_id)
+                if memory is None:
+                    continue
+                row.update({"memory_id": node_id, "memory": memory})
+            else:
+                segment = self.segments.get(node_id)
+                if segment is None:
+                    continue
+                row.update({
+                    "segment_id": node_id,
+                    "segment": segment,
+                    "status": segment.status,
+                })
+            node_rows.append(row)
+            lexical_documents.append((row["id"], lexical_document))
+            entity_documents[row["id"]] = lexical_document
             for field in fields:
                 semantic_texts.append(field)
-                semantic_owner_ids.append(memory_id)
+                semantic_owner_ids.append(row["id"])
+
+        if not node_rows:
+            return []
 
         query_vector = np.asarray(
             self.active_graph.encoder.encode([query])[0], dtype=np.float32
@@ -672,7 +707,7 @@ class DailyMemoryGraph:
         encoded_fields = np.asarray(
             self.active_graph.encoder.encode(semantic_texts), dtype=np.float32
         )
-        semantic_scores = {row["memory_id"]: 0.0 for row in memory_rows}
+        semantic_scores = {row["id"]: 0.0 for row in node_rows}
         for owner_id, vector in zip(semantic_owner_ids, encoded_fields):
             norm = float(np.linalg.norm(vector))
             if norm > 0:
@@ -681,8 +716,8 @@ class DailyMemoryGraph:
                 semantic_scores[owner_id], float(np.dot(query_vector, vector))
             )
         semantic_rank = [
-            memory_id
-            for memory_id, _ in sorted(
+            item_id
+            for item_id, _ in sorted(
                 semantic_scores.items(), key=lambda item: (-item[1], item[0])
             )[:k]
         ]
@@ -690,24 +725,24 @@ class DailyMemoryGraph:
         bm25 = BM25(lexical_documents)
         lexical_scores = bm25.scores(set(lex_tokens(query)))
         lexical_rank = [
-            memory_id
-            for memory_id, _ in sorted(
+            item_id
+            for item_id, _ in sorted(
                 lexical_scores.items(), key=lambda item: (-item[1], item[0])
             )[:k]
         ]
 
         query_entities = extract_entities(query)
         entity_values = {
-            memory_id: extract_entities(document)
-            for memory_id, document in entity_documents.items()
+            item_id: extract_entities(document)
+            for item_id, document in entity_documents.items()
         }
         entity_scores = {
-            memory_id: entity_overlap(query_entities, values)
-            for memory_id, values in entity_values.items()
+            item_id: entity_overlap(query_entities, values)
+            for item_id, values in entity_values.items()
         }
         entity_rank = [
-            memory_id
-            for memory_id, score in sorted(
+            item_id
+            for item_id, score in sorted(
                 entity_scores.items(), key=lambda item: (-item[1], item[0])
             )
             if score > 0.0
@@ -717,27 +752,37 @@ class DailyMemoryGraph:
             [semantic_rank, lexical_rank, entity_rank], self.config.retrieval_rrf_k
         )
         rows = []
-        for row in memory_rows:
-            memory_id = row["memory_id"]
-            if memory_id not in fused_scores:
+        for row in node_rows:
+            item_id = row["id"]
+            if item_id not in fused_scores:
                 continue
-            rows.append(
-                {
-                    "memory_id": memory_id,
-                    "score": float(fused_scores[memory_id]),
-                    "similarity": float(semantic_scores[memory_id]),
-                    "lexical_score": float(lexical_scores.get(memory_id, 0.0)),
-                    "entity_score": float(entity_scores[memory_id]),
-                    "memory": row["memory"].to_dict(),
-                }
-            )
+            result = {
+                key: value
+                for key, value in row.items()
+                if key not in {"id", "node_id", "kind", "memory", "segment"}
+            }
+            result.update({
+                "id": item_id,
+                "node_id": row["node_id"],
+                "kind": row["kind"],
+                "source": row["kind"],
+                "score": float(fused_scores[item_id]),
+                "similarity": float(semantic_scores[item_id]),
+                "lexical_score": float(lexical_scores.get(item_id, 0.0)),
+                "entity_score": float(entity_scores[item_id]),
+            })
+            if row["kind"] == "memory":
+                result["memory"] = row["memory"].to_dict()
+            else:
+                result["segment"] = row["segment"].to_dict()
+            rows.append(result)
         rows.sort(
             key=lambda row: (
                 -row["score"],
                 -row["entity_score"],
                 -row["lexical_score"],
                 -row["similarity"],
-                row["memory_id"],
+                row["id"],
             )
         )
         return rows[:k]

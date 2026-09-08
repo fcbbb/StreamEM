@@ -122,6 +122,12 @@ def filter_questions(
 
 
 def compact_memory(row: dict[str, Any]) -> dict[str, Any]:
+    if row.get("kind") == "segment":
+        segment = row["segment"]
+        return {
+            "anchor": segment["anchor"],
+            "text": segment["text"],
+        }
     memory = row["memory"]
     return {
         "topic": memory["topic"],
@@ -230,12 +236,17 @@ class MemoryEvaluationRunner:
     def retrieve_diagnostics(self, question: str) -> list[dict[str, Any]]:
         return [
             {
-                "memory_id": row["memory_id"],
+                "memory_id": row.get("memory_id", row.get("segment_id")),
                 "score": round(float(row["score"]), 6),
                 "similarity": round(float(row.get("similarity", 0.0)), 6),
                 "lexical_score": round(float(row.get("lexical_score", 0.0)), 6),
                 "entity_score": round(float(row.get("entity_score", 0.0)), 6),
-                "topic": row["memory"]["topic"],
+                "topic": (
+                    row["memory"]["topic"]
+                    if row.get("kind") != "segment"
+                    else row["segment"]["anchor"]
+                ),
+                "kind": row.get("kind", "memory"),
             }
             for row in self.pipeline.retrieve(question, self.top_k)
         ]
@@ -312,12 +323,17 @@ question about the candidate response. Return JSON only with exactly:
         memories = [compact_memory(row) for row in retrieval_rows]
         retrieval_diagnostics = [
             {
-                "memory_id": row["memory_id"],
+                "memory_id": row.get("memory_id", row.get("segment_id")),
                 "score": round(float(row["score"]), 6),
                 "similarity": round(float(row.get("similarity", 0.0)), 6),
                 "lexical_score": round(float(row.get("lexical_score", 0.0)), 6),
                 "entity_score": round(float(row.get("entity_score", 0.0)), 6),
-                "topic": row["memory"]["topic"],
+                "topic": (
+                    row["memory"]["topic"]
+                    if row.get("kind") != "segment"
+                    else row["segment"]["anchor"]
+                ),
+                "kind": row.get("kind", "memory"),
             }
             for row in retrieval_rows
         ]

@@ -10,7 +10,7 @@ import numpy as np
 
 from stream_memory_graph_daily.config import DailyGraphConfig
 from stream_memory_graph_daily.community import CommunityPlan, PlannedCommunity
-from stream_memory_graph_daily.models import MemoryRecord, SegmentRecord
+from stream_memory_graph_daily.models import BoundaryRecord, MemoryRecord, SegmentRecord
 from stream_memory_graph_daily.pipeline import DailyMemoryGraph
 
 
@@ -401,6 +401,48 @@ class DailyPipelineTests(unittest.TestCase):
         self.assertEqual(task_results[0]["memory_id"], "m-paper")
         self.assertGreater(bridge_results[0]["entity_score"], 0.0)
         self.assertGreater(paper_results[0]["similarity"], 0.0)
+
+    def test_retrieval_includes_all_active_memory_and_segment_nodes(self) -> None:
+        pipeline = DailyMemoryGraph(encoder=RetrievalEncoder(), config=self.config)
+        memory = MemoryRecord(
+            "m-existing",
+            "Existing topic",
+            "An existing compressed memory.",
+        )
+        active = SegmentRecord(
+            "s-active",
+            "The user is preparing journal submissions.",
+            "journal submissions",
+            "2025-06-05",
+        )
+        boundary = SegmentRecord(
+            "s-boundary",
+            "The user is considering journal submissions.",
+            "journal submissions",
+            "2025-06-05",
+            status="boundary",
+        )
+        pipeline.memories[memory.memory_id] = memory
+        pipeline.segments[active.segment_id] = active
+        pipeline.segments[boundary.segment_id] = boundary
+        pipeline.boundaries[boundary.segment_id] = BoundaryRecord(
+            segment_id=boundary.segment_id,
+            candidate_memories={memory.memory_id: 0.6},
+            reason="ambiguous",
+            first_seen_date=boundary.event_date,
+            last_checked_date=boundary.event_date,
+        )
+        pipeline.active_graph.add_memory(memory.memory_id, memory.topic)
+        pipeline.active_graph.add_segment(active.segment_id, active.anchor)
+        pipeline.active_graph.add_segment(boundary.segment_id, boundary.anchor)
+
+        results = pipeline.retrieve("journal submissions", k=10)
+        by_id = {row["id"]: row for row in results}
+
+        self.assertEqual(set(by_id), {"m-existing", "segment:s-active", "segment:s-boundary"})
+        self.assertEqual(by_id["m-existing"]["kind"], "memory")
+        self.assertEqual(by_id["segment:s-active"]["segment_id"], "s-active")
+        self.assertEqual(by_id["segment:s-boundary"]["status"], "boundary")
 
 
 if __name__ == "__main__":
