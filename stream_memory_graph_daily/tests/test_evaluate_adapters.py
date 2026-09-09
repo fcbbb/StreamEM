@@ -17,11 +17,24 @@ from stream_memory_graph_daily.evaluate.memory_to_answer import (
     generate_report,
     load_questions,
 )
+from stream_memory_graph_daily.evaluate.share_memory import (
+    build_share_memory_attributions,
+    supervision_leakage_events,
+)
+from stream_memory_graph_daily.evaluate.share_memory_to_report import (
+    ShareMemorySemanticEvaluator,
+    generate_semantic_report,
+    load_jsonl,
+)
 from stream_memory_graph_daily.pipeline import DailyMemoryGraph
 
 
 class EvaluationFakeLLM:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
     def complete(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        self.calls.append((system_prompt, user_prompt))
         if system_prompt.startswith("Conservatively partition one graph community"):
             payload = json.loads(user_prompt.split("INPUT DATA\n", 1)[1])
             return {
@@ -54,7 +67,7 @@ class EvaluationFakeLLM:
                 }
                 for segment in segments
             ]}
-        if system_prompt.startswith("Extract one structured topic-memory"):
+        if "extract one structured topic-memory" in system_prompt.lower():
             return {
                 "topic": "coffee spending",
                 "summary": "The user recorded a coffee purchase.",
@@ -81,6 +94,7 @@ class EvaluationFakeLLM:
                         "source_segment_ids": [new_rows[0]["segment_id"]],
                     }
                 ],
+                "no_op_reason": None,
             }
         if system_prompt.startswith("You answer questions"):
             return {"answer": "The user spent $3.66 on coffee."}
@@ -97,7 +111,14 @@ def conversation(session_id: int, event_date: str, text: str) -> dict[str, Any]:
     return {
         "session_id": session_id,
         "date": event_date,
-        "conversation": [{"turn": 1, "speaker": "user", "message": text}],
+        "operation": "add",
+        "operation_details": {"expected_text": text},
+        "conversation": [{
+            "turn": 1,
+            "speaker": "user",
+            "message": text,
+            "share_memory": True,
+        }],
     }
 
 
@@ -136,9 +157,44 @@ class EvaluationAdapterTests(unittest.TestCase):
             self.assertTrue((build_dir / "segments.jsonl").is_file())
             self.assertTrue((build_dir / "trace.jsonl").is_file())
             self.assertTrue((build_dir / "stage_audit.jsonl").is_file())
+            self.assertTrue((build_dir / "share_memory_labels.jsonl").is_file())
+            self.assertTrue((build_dir / "share_memory_attribution.jsonl").is_file())
+            self.assertTrue((build_dir / "share_memory_report.json").is_file())
+
+            labels = load_jsonl(build_dir / "share_memory_labels.jsonl")
+            self.assertEqual(len(labels), 2)
+            structural = json.loads(
+                (build_dir / "share_memory_report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(structural["mapped_labels"], 2)
+            self.assertEqual(structural["supervision_leakage_event_count"], 0)
+            self.assertNotIn(
+                "share_memory",
+                "\n".join(user_prompt for _, user_prompt in fake.calls),
+            )
 
             restored = DailyMemoryGraph.load(state_path, encoder=HashEncoder())
             self.assertGreater(len(restored.stage_audit), 0)
+            self.assertEqual(supervision_leakage_events(restored), [])
+            attributions = build_share_memory_attributions(labels, restored)
+            self.assertTrue(all(row["segment_ids"] for row in attributions))
+
+            class RetentionJudge:
+                def complete(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+                    self.payload = json.loads(user_prompt.split("EVALUATION DATA\n", 1)[1])
+                    return {
+                        "retained": True,
+                        "confidence": 1.0,
+                        "failure_type": "none",
+                        "reason": "The memory contains the target purchase.",
+                    }
+
+            retention_judge = RetentionJudge()
+            semantic = ShareMemorySemanticEvaluator(restored, retention_judge)
+            semantic_result = semantic.evaluate(attributions[0])
+            self.assertTrue(semantic_result["retained"])
+            self.assertIn("operation_details", retention_judge.payload)
+            self.assertEqual(generate_semantic_report([semantic_result])["retention_rate"], 1.0)
             evaluator = MemoryEvaluationRunner(
                 restored,
                 evaluation_dir,

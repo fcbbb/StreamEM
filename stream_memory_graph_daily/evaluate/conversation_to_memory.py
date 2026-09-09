@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -23,6 +25,12 @@ if str(REPO_ROOT) not in sys.path:
 from stream_memory_graph_daily.config import DailyGraphConfig
 from stream_memory_graph_daily.encoder import load_encoder
 from stream_memory_graph_daily.evaluate.progress import ConsoleProgress
+from stream_memory_graph_daily.evaluate.share_memory import (
+    build_share_memory_attributions,
+    extract_share_memory_labels,
+    generate_share_memory_report,
+    sanitize_conversation_for_inference,
+)
 from stream_memory_graph_daily.llm import OpenAIJsonLLM, load_env
 from stream_memory_graph_daily.pipeline import DailyMemoryGraph
 
@@ -108,15 +116,25 @@ class MemoryBuildRunner:
         progress_file: Path | None = None,
         save_every: int = 1,
         resume_progress: bool = False,
+        preprocess_workers: int = 1,
+        use_cache: bool = False,
+        cache_dir: Path | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         self.pipeline = pipeline
         self.output_dir = output_dir
         self.state_file = state_file or output_dir / "memory_state.json"
         self.progress_file = progress_file or output_dir / "progress.json"
+        self.share_memory_labels_file = output_dir / "share_memory_labels.jsonl"
+        self.share_memory_attribution_file = output_dir / "share_memory_attribution.jsonl"
+        self.share_memory_report_file = output_dir / "share_memory_report.json"
         self.save_every = max(1, int(save_every))
+        self.preprocess_workers = max(1, int(preprocess_workers))
+        self.use_cache = bool(use_cache)
+        self.cache_dir = cache_dir or output_dir / "preprocess_cache"
         self.metadata = dict(metadata or {})
         self.progress = self._load_progress() if resume_progress else self._new_progress()
+        self.share_memory_labels = self._load_share_memory_labels() if resume_progress else []
 
     @staticmethod
     def _new_progress() -> dict[str, Any]:
@@ -136,6 +154,30 @@ class MemoryBuildRunner:
             if isinstance(value, dict):
                 return value
         return self._new_progress()
+
+    def _load_share_memory_labels(self) -> list[dict[str, Any]]:
+        if not self.share_memory_labels_file.is_file():
+            return []
+        rows = []
+        for line in self.share_memory_labels_file.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                value = json.loads(line)
+                if isinstance(value, dict):
+                    rows.append(value)
+        return rows
+
+    def _upsert_share_memory_labels(self, rows: Iterable[dict[str, Any]]) -> None:
+        by_id = {
+            str(row.get("label_id")): dict(row)
+            for row in self.share_memory_labels
+            if row.get("label_id")
+        }
+        for row in rows:
+            label_id = str(row.get("label_id", ""))
+            if not label_id:
+                raise ValueError("share_memory evaluation label has no label_id")
+            by_id[label_id] = dict(row)
+        self.share_memory_labels = [by_id[key] for key in sorted(by_id)]
 
     def persist(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -157,9 +199,26 @@ class MemoryBuildRunner:
             self.output_dir / "stage_audit.jsonl",
             self.pipeline.stage_audit,
         )
+        attributions = build_share_memory_attributions(
+            self.share_memory_labels, self.pipeline
+        )
+        share_memory_report = generate_share_memory_report(
+            attributions, self.pipeline
+        )
+        write_jsonl(self.share_memory_labels_file, self.share_memory_labels)
+        write_jsonl(self.share_memory_attribution_file, attributions)
+        atomic_write_json(self.share_memory_report_file, share_memory_report)
         self.progress["updated_at"] = utc_now()
         self.progress["state_file"] = str(self.state_file.resolve())
         self.progress["stats"] = self.pipeline.stats()
+        self.progress["share_memory"] = {
+            "labels": len(self.share_memory_labels),
+            "mapped": share_memory_report["mapped_labels"],
+            "fully_compressed": share_memory_report["fully_compressed_labels"],
+            "supervision_leakage_events": share_memory_report[
+                "supervision_leakage_event_count"
+            ],
+        }
         atomic_write_json(self.progress_file, self.progress)
         atomic_write_json(
             self.output_dir / "run_manifest.json",
@@ -169,6 +228,11 @@ class MemoryBuildRunner:
                 "state_file": str(self.state_file.resolve()),
                 "progress_file": str(self.progress_file.resolve()),
                 "stage_audit_file": str((self.output_dir / "stage_audit.jsonl").resolve()),
+                "share_memory_labels_file": str(self.share_memory_labels_file.resolve()),
+                "share_memory_attribution_file": str(
+                    self.share_memory_attribution_file.resolve()
+                ),
+                "share_memory_report_file": str(self.share_memory_report_file.resolve()),
                 "pipeline_schema": self.pipeline.schema_version,
                 "config": self.pipeline.config.to_dict(),
                 "stats": self.pipeline.stats(),
@@ -176,19 +240,118 @@ class MemoryBuildRunner:
             },
         )
 
+    def _cache_model(self) -> str | None:
+        model = getattr(self.pipeline.llm, "model", None)
+        return str(model) if model else self.metadata.get("llm_model")
+
+    def _cache_path(self, session_id: int) -> Path:
+        return self.cache_dir / f"session_{session_id:04d}.json"
+
+    def _prepare_file(
+        self,
+        item: tuple[int, Path, dict[str, Any], str],
+    ) -> dict[str, Any]:
+        """Prepare one session without mutating graph state.
+
+        This function is safe to run in a worker thread. Each worker only
+        calls the stateless cutting/anchoring stages and writes its own cache
+        file; graph ingestion remains on the main thread.
+        """
+
+        position, path, conversation, source_sha256 = item
+        session_id = session_id_from_path(path)
+        cache_path = self._cache_path(session_id)
+        cache_model = self._cache_model()
+        if self.use_cache and cache_path.is_file():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if (
+                    isinstance(cached, dict)
+                    and cached.get("schema_version") == "conversation_preprocess_cache_v1"
+                    and cached.get("source_sha256") == source_sha256
+                    and cached.get("llm_model") == cache_model
+                    and isinstance(cached.get("prepared"), dict)
+                ):
+                    return {
+                        "position": position,
+                        "path": path,
+                        "status": "success",
+                        "prepared": cached["prepared"],
+                        "cache_hit": True,
+                    }
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                # A malformed or stale cache is simply rebuilt.
+                pass
+
+        inference_conversation = sanitize_conversation_for_inference(conversation)
+        prepared = self.pipeline.prepare_conversation(inference_conversation)
+        if self.use_cache:
+            atomic_write_json(
+                cache_path,
+                {
+                    "schema_version": "conversation_preprocess_cache_v1",
+                    "source_sha256": source_sha256,
+                    "llm_model": cache_model,
+                    "session_id": session_id,
+                    "prepared": prepared,
+                },
+            )
+        return {
+            "position": position,
+            "path": path,
+            "status": "success",
+            "prepared": prepared,
+            "cache_hit": False,
+        }
+
+    def _prepare_file_safe(
+        self,
+        item: tuple[int, Path, dict[str, Any], str],
+    ) -> dict[str, Any]:
+        try:
+            return self._prepare_file(item)
+        except Exception as exc:
+            return {
+                "position": item[0],
+                "path": item[1],
+                "status": "failed",
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+
     def run(self, files: list[Path], *, fail_fast: bool = False) -> dict[str, Any]:
         completed = {int(value) for value in self.progress.get("successful_sessions", [])}
         processed_since_save = 0
         progress_bar = ConsoleProgress(len(files), "构建记忆")
+
+        pending: list[tuple[int, Path, dict[str, Any], str]] = []
         for position, path in enumerate(files, start=1):
             session_id = session_id_from_path(path)
+            raw = path.read_bytes()
+            conversation = json.loads(raw.decode("utf-8"))
+            self._upsert_share_memory_labels(
+                extract_share_memory_labels(conversation, source_file=path)
+            )
             if session_id in completed:
                 progress_bar.update(position, f"session_{session_id:04d} 已存在")
                 continue
+
+            pending.append(
+                (position, path, conversation, hashlib.sha256(raw).hexdigest())
+            )
+
+        def consume(prepared_result: dict[str, Any]) -> None:
+            nonlocal processed_since_save
+            position = int(prepared_result["position"])
+            path = Path(prepared_result["path"])
+            session_id = session_id_from_path(path)
             progress_bar.update(position - 1, f"session_{session_id:04d} 处理中")
             try:
-                conversation = json.loads(path.read_text(encoding="utf-8"))
-                result = self.pipeline.ingest_conversation(conversation)
+                if prepared_result.get("status") != "success":
+                    raise RuntimeError(str(prepared_result.get("error", "preprocessing failed")))
+                result = self.pipeline.ingest_prepared_conversation(
+                    prepared_result["prepared"]
+                )
                 self.progress["successful_sessions"].append(session_id)
                 self.progress["session_results"].append(
                     {
@@ -197,6 +360,7 @@ class MemoryBuildRunner:
                         "status": "success",
                         "event_date": result["event_date"],
                         "cut_segments": result["cut_segments"],
+                        "cache_hit": bool(prepared_result.get("cache_hit", False)),
                         "saved_at": utc_now(),
                     }
                 )
@@ -226,6 +390,15 @@ class MemoryBuildRunner:
                 self.persist()
                 processed_since_save = 0
 
+        if self.preprocess_workers > 1 and pending:
+            with ThreadPoolExecutor(max_workers=self.preprocess_workers) as executor:
+                for prepared_result in executor.map(self._prepare_file_safe, pending):
+                    consume(prepared_result)
+        else:
+            for item in pending:
+                prepared_result = self._prepare_file_safe(item)
+                consume(prepared_result)
+
         self.progress["finalize_result"] = self.pipeline.finalize()
         self.persist()
         progress_bar.finish(
@@ -238,6 +411,7 @@ class MemoryBuildRunner:
             "failed": len(self.progress["failed_sessions"]),
             "stats": self.pipeline.stats(),
             "finalize": self.progress["finalize_result"],
+            "share_memory_report": str(self.share_memory_report_file),
         }
 
 
@@ -251,6 +425,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--session-range", type=parse_range, metavar="START-END")
     parser.add_argument("--save-every", type=int, default=1)
+    parser.add_argument(
+        "--preprocess-workers",
+        type=int,
+        default=1,
+        help="并发执行 cutting/anchor 预处理的 worker 数；图写入仍按 session 顺序进行",
+    )
+    parser.add_argument(
+        "--use-cache",
+        action="store_true",
+        help="启用 session 预处理缓存，缓存按源文件哈希和模型名校验",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        help="预处理缓存目录，默认是 output-dir/preprocess_cache",
+    )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--no-llm", action="store_true")
     parser.add_argument("--llm-model", default="gpt-5.6-luna")
@@ -281,6 +471,13 @@ def main() -> None:
     output_dir = args.output_dir.resolve()
     state_file = (args.state_file or output_dir / "memory_state.json").resolve()
     progress_file = (args.progress_file or output_dir / "progress.json").resolve()
+    cache_dir = (
+        args.cache_dir.resolve()
+        if args.cache_dir
+        else output_dir / "preprocess_cache"
+    )
+    if args.preprocess_workers < 1:
+        raise ValueError("--preprocess-workers 必须为正整数")
     config = DailyGraphConfig(
         knn_k=args.knn_k,
         new_new_threshold=args.new_new_threshold,
@@ -318,12 +515,18 @@ def main() -> None:
         progress_file=progress_file,
         save_every=args.save_every,
         resume_progress=args.resume,
+        preprocess_workers=args.preprocess_workers,
+        use_cache=args.use_cache,
+        cache_dir=cache_dir,
         metadata={
             "conversation_directory": str(args.conversation_directory.resolve()),
             "selected_session_count": len(files),
             "llm_model": None if args.no_llm else args.llm_model,
             "encoder_model": args.encoder_model,
             "use_proxy": args.use_proxy,
+            "preprocess_workers": args.preprocess_workers,
+            "use_cache": args.use_cache,
+            "cache_dir": str(cache_dir),
         },
     )
     result = runner.run(files, fail_fast=args.fail_fast)

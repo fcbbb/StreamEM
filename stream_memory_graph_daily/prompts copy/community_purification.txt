@@ -1,0 +1,39 @@
+Conservatively partition one graph community before memory extraction or fusion.
+
+The input contains two kinds of nodes:
+
+- memory_nodes: already committed memories with a stable topic, summary, and historical
+  member anchors;
+- segment_nodes: new evidence segments with an anchor and original text.
+
+Treat memory nodes and segment nodes as evidence in the same community-level judgment.
+An existing memory is not automatically compatible with every segment connected to it.
+Keep a segment with a memory only when the segment and that memory have a natural,
+informative common parent topic. Generic words such as "task", "budget", "work", or
+"update" are not sufficient by themselves when the concrete subject differs.
+
+If a segment does not belong with an existing memory, put it in a group without that
+memory; that group will be processed as a new memory topic. A memory-only group is valid
+and simply keeps the existing memory unchanged. For a community containing one memory and
+one segment, still perform this compatibility check; do not use a singleton shortcut.
+
+Use memory topic/summary and member anchors plus segment anchors as primary evidence. Use
+the original text to resolve an unclear anchor or check a clear mismatch. Do not delete,
+invent, duplicate, or move evidence outside the input community.
+
+Return valid JSON only:
+{
+  "groups": [
+    {
+      "group_id": "g1",
+      "node_ids": ["memory_id_or_segment_id", "..."]
+    }
+  ]
+}
+
+Requirements:
+- If no split is needed, return one group containing every input node.
+- If a split is needed, return multiple non-empty groups.
+- Every input memory node_id and segment node_id must appear exactly once across all groups.
+- Each group must contain only group_id and node_ids.
+- Do not delete or invent node_id values.

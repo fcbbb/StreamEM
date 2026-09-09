@@ -88,7 +88,7 @@ class MemoryFakeLLM:
                 }
                 for segment in segments
             ]}
-        if system_prompt.startswith("Extract one structured topic-memory"):
+        if "extract one structured topic-memory" in system_prompt.lower():
             self.extractions += 1
             return {
                 "topic": "Coffee spending",
@@ -117,6 +117,7 @@ class MemoryFakeLLM:
                         "source_segment_ids": [segments[0]["segment_id"]],
                     }
                 ],
+                "no_op_reason": None,
             }
         raise AssertionError(f"unexpected prompt: {system_prompt[:60]}")
 
@@ -188,8 +189,15 @@ class DailyPipelineTests(unittest.TestCase):
             {
                 "session_id": 9,
                 "date": "2025-06-04",
+                "operation": "add",
+                "operation_details": {"hidden_evaluation_value": 3.66},
                 "conversation": [
-                    {"turn": 1, "speaker": "user", "message": "I spent $3.66 on coffee."},
+                    {
+                        "turn": 1,
+                        "speaker": "user",
+                        "message": "I spent $3.66 on coffee.",
+                        "share_memory": True,
+                    },
                     {"turn": 2, "speaker": "assistant", "message": "I recorded that."},
                 ],
             }
@@ -198,6 +206,17 @@ class DailyPipelineTests(unittest.TestCase):
         self.assertEqual(result["cut_segments"], 1)
         self.assertEqual(result["results"][0]["status"], "added")
         self.assertEqual(pipeline.segments["9_seg001"].anchor, "coffee purchase")
+        conversation_audit = next(
+            row for row in pipeline.stage_audit if row["stage"] == "conversation_input"
+        )
+        audited_input = json.dumps(conversation_audit["input"])
+        self.assertNotIn("share_memory", audited_input)
+        self.assertNotIn("operation_details", audited_input)
+        self.assertNotIn('"operation"', audited_input)
+        self.assertEqual(
+            result["segment_mappings"][0]["message_unit_ids"],
+            {"m001": ["u001"], "m002": ["u002"]},
+        )
         pipeline.finalize()
         self.assertEqual(llm.extractions, 1)
         self.assertEqual(len(pipeline.memories), 1)
@@ -246,7 +265,7 @@ class DailyPipelineTests(unittest.TestCase):
             SegmentRecord("s2", "Today coffee cost $4.20.", "coffee price", "2025-06-01")
         )
 
-        result = pipeline.finalize()
+        deferred = pipeline.checkpoint(reason="manual", checkpoint_date="2025-06-01")
 
         self.assertEqual(llm.extractions, 0)
         self.assertEqual(len(pipeline.memories), 0)
@@ -255,8 +274,21 @@ class DailyPipelineTests(unittest.TestCase):
             {"active"},
         )
         self.assertEqual(
-            [row["action"] for row in result["changes"]],
+            [row["action"] for row in deferred["changes"]],
             ["singleton_kept_active", "singleton_kept_active"],
+        )
+        self.assertEqual(pipeline.pending_segment_ids, {"s1", "s2"})
+
+        finalized = pipeline.finalize()
+        self.assertEqual(llm.extractions, 2)
+        self.assertEqual(len(pipeline.memories), 2)
+        self.assertEqual(
+            {pipeline.segments[segment_id].status for segment_id in ("s1", "s2")},
+            {"compressed"},
+        )
+        self.assertEqual(
+            [row["action"] for row in finalized["changes"]],
+            ["memory_created", "memory_created"],
         )
         purification_actions = {
             row["action"]
@@ -316,11 +348,11 @@ class DailyPipelineTests(unittest.TestCase):
 
         self.assertEqual(llm.asserted_memory_nodes[0]["node_id"], "m-existing")
         self.assertEqual(llm.fusions, 0)
-        self.assertEqual(llm.extractions, 0)
-        self.assertEqual(pipeline.segments["new"].status, "active")
-        self.assertIsNone(pipeline.segments["new"].memory_id)
-        self.assertIn("new", pipeline.active_graph.nodes)
-        self.assertNotIn("m-existing", pipeline.active_graph.graph["new"])
+        self.assertEqual(llm.extractions, 1)
+        self.assertEqual(pipeline.segments["new"].status, "compressed")
+        self.assertIsNotNone(pipeline.segments["new"].memory_id)
+        self.assertNotIn("new", pipeline.active_graph.nodes)
+        self.assertEqual(len(pipeline.memories), 2)
         self.assertTrue(any(
             row.get("action") == "llm_call"
             and row.get("stage") == "community_purification"

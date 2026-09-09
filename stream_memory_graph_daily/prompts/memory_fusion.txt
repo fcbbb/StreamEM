@@ -1,39 +1,42 @@
 You maintain structured memory for one specific topic. Fuse new_group into existing_memory. Return the complete fused topic and summary, plus the smallest incremental operation set needed to produce the final topic_context and user_memories.
 
-First understand the complete current state. Then identify durable additions, elaborations, corrections, state changes, and resolutions introduced by the new conversation.
+{{SHARED_SEMANTICS}}
 
-Retention rules:
+First understand the complete existing state. Review every segment in new_group and collect all explicit user information and established topic context under the same criteria used for initial extraction. Preserve user facts even when they are brief, one-time, temporary, embedded in questions, or introduced through a transition.
 
-- topic is a concise, stable name for the complete fused memory. Keep its scope stable unless the new conversation materially changes or expands that scope.
-- summary is a complete 1-2 sentence account of the fused topic's main aspects and current state. Rewrite it when content or state materially changes; otherwise reuse the existing value.
-- topic_context retains only context that can change a future answer, decision, or action: unresolved issues, current project/task state, decisions, constraints, plans, next steps, follow-up requirements, and accepted or reused topic-specific conclusions.
-- user_memories retains all durable facts explicitly stated by the user, including experiences, preferences, goals, decisions, plans, constraints, amounts, dates, counts, measurements, progress, states, and actions.
+Use established topic context for unresolved issues, active task or project state, decisions, constraints, next steps, accepted conclusions, and shared understanding used later. Treat an explicit user learning state, knowledge gap, or learning goal as user information. Treat a conclusion as topic context when the user accepts it or later dialogue relies on it.
 
-Keep general knowledge, background explanations, ordinary Q&A, casual exploration, transient reactions, wording-only content, repeated expressions, unsupported inference, and assistant-only claims out of the stored item arrays. An assistant answer may enter topic_context only when the user accepts it, later dialogue relies on it, or it becomes a project-specific conclusion. Use questions to identify topic direction, tasks, or genuinely open issues.
+Produce the final state as follows:
 
-Merge repeated or highly similar topic_context. Merge user facts only when exactly duplicate; preserve distinct dates, values, events, and stages. Each content is one concise sentence with concrete details. Use concise natural-language type labels from an open set. Ground every output item in existing_memory or new_group.
+- topic is a concise, stable name for the complete fused topic identity. Change its scope only when the new conversation materially changes or expands that identity.
+- summary is a complete 1-2 sentence account of the fused topic's main content and current state. Rewrite it when the content or state materially changes; otherwise reuse it.
+- topic_context contains concise established context needed to continue the topic coherently.
+- user_memories contains every distinct explicit user fact supported by existing_memory or new_group.
+
+Compress wording, not information. Merge repeated or strongly overlapping topic context. Merge user memories only when they express the same fact; preserve different objects, dates, values, events, stages, and states. Preserve concrete details, negation, conditions, uncertainty, and meaningful temporal change.
 
 Fusion rules:
 
-1. Put new information in the most appropriate field and merge equivalent or strongly overlapping content.
-2. Use update for elaboration, progress, correction, or state change to the same existing matter; its value is the complete final item.
-3. When an issue is resolved, update or delete the open issue and retain any durable conclusion in the appropriate item.
-4. Preserve valid existing items when new_group focuses elsewhere.
-5. If old and new evidence conflict and more than one interpretation remains supported, preserve the claims, temporal distinction, or uncertainty. If only the existing state remains supported, leave it unchanged.
-6. Use the fewest operations required, combining successive changes to the same item.
+1. Add each genuinely new fact or context item.
+2. Use update when new evidence elaborates, corrects, progresses, replaces, or changes the state of the same existing matter. The value must be the complete final item.
+3. When a task, issue, preference, plan, or other state is completed, cancelled, withdrawn, or replaced, remove its obsolete current-state expression and retain the newly stated fact or resulting state in the appropriate field.
+4. Preserve every valid existing item not affected by new evidence.
+5. Preserve an explicit temporal transition when both the former and current state matter to the user's statement. When uncertainty or multiple supported interpretations remain, represent that uncertainty rather than choosing one without evidence.
+6. Use the fewest non-redundant operations that preserve every distinct fact and state. Combine successive changes to the same item into its final state.
 
 Operations:
 
 - add: field is topic_context or user_memories; omit item_id because the executor creates it; value is exactly {"type":"...","content":"complete new content"}.
 - update: field is the existing item's field; item_id is that item's existing item_id; value is exactly {"type":"...","content":"complete updated content"}.
-- delete: field is the existing item's field; item_id is that item's existing item_id; omit value. Delete only when explicitly invalidated, cancelled, fully replaced, resolved, or no longer applicable. If any part remains valid, use one update instead.
+- delete: field is the existing item's field; item_id is that item's existing item_id; omit value. Use it when the existing item is explicitly invalidated, cancelled, withdrawn, fully replaced, resolved, or no longer applicable. If any part remains valid, use one update instead.
 - source_segment_ids is required on every operation. It lists the actual new_group segment_id values that directly justify that change. Use the smallest sufficient source set. Never cite an ID outside new_group.
 
 Return valid JSON only with exactly:
 {
   "topic": "complete fused topic",
   "summary": "complete fused summary",
-  "operations": []
+  "operations": [],
+  "no_op_reason": null
 }
 
 Each operations element must match exactly one of these shapes:
@@ -47,4 +50,4 @@ update:
 delete:
 {"operation":"delete","field":"topic_context|user_memories","item_id":"existing input item_id","source_segment_ids":["supporting new_group segment_id"]}
 
-Always return topic and summary. Return an empty operations array when the item arrays need no changes. Add objects contain exactly operation, field, value, source_segment_ids. Update objects contain exactly operation, field, item_id, value, source_segment_ids. Delete objects contain exactly operation, field, item_id, source_segment_ids. For update/delete, reuse item_id directly from the input; never invent or rewrite it.
+Always return topic and summary. When operations is non-empty, no_op_reason must be null. Return an empty operations array only in one of these two cases and state which one in no_op_reason: use "already_present" when every storable fact or state in new_group is already fully represented in existing_memory; use "no_storable_content" when new_group contains no explicit user information or established topic context. Add objects contain exactly operation, field, value, source_segment_ids. Update objects contain exactly operation, field, item_id, value, source_segment_ids. Delete objects contain exactly operation, field, item_id, source_segment_ids. For update/delete, reuse item_id directly from the input; never invent or rewrite it.

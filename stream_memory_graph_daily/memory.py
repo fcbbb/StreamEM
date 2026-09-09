@@ -118,6 +118,12 @@ class MemoryService:
         required = {"topic", "summary", "topic_context", "user_memories"}
         if set(value) != required:
             raise ValueError(f"memory extraction fields must be exactly {sorted(required)}")
+        topic_context = value["topic_context"]
+        user_memories = value["user_memories"]
+        if not isinstance(topic_context, list) or not isinstance(user_memories, list):
+            raise ValueError("memory extraction item fields must be lists")
+        if not topic_context and not user_memories:
+            return None
         now = utc_now()
         memory_id = stable_memory_id([segment.segment_id for segment in segments])
         return MemoryRecord(
@@ -125,10 +131,10 @@ class MemoryService:
             topic=value["topic"],
             summary=value["summary"],
             topic_context=_initial_items(
-                memory_id, "topic_context", value["topic_context"]
+                memory_id, "topic_context", topic_context
             ),
             user_memories=_initial_items(
-                memory_id, "user_memories", value["user_memories"]
+                memory_id, "user_memories", user_memories
             ),
             source_anchors=list(dict.fromkeys(segment.anchor for segment in segments)),
             source_segments=[segment.segment_id for segment in segments],
@@ -153,16 +159,25 @@ class MemoryService:
                 },
             },
         )
-        required = {"topic", "summary", "operations"}
+        required = {"topic", "summary", "operations", "no_op_reason"}
         if set(value) != required:
             raise ValueError(f"memory fusion fields must be exactly {sorted(required)}")
         topic = str(value["topic"]).strip()
         summary = str(value["summary"]).strip()
         operations = value["operations"]
+        no_op_reason = value["no_op_reason"]
         if not topic or not summary:
             raise ValueError("fusion topic and summary must be non-empty strings")
         if not isinstance(operations, list):
             raise ValueError("fusion operations must be a list")
+        if operations:
+            if no_op_reason is not None:
+                raise ValueError("fusion no_op_reason must be null when operations are present")
+        elif no_op_reason not in {"already_present", "no_storable_content"}:
+            raise ValueError(
+                "fusion no_op_reason must distinguish already_present from "
+                "no_storable_content when operations are empty"
+            )
 
         fields = {
             "topic_context": [dict(item) for item in existing.topic_context],
@@ -290,6 +305,7 @@ class MemoryService:
             "topic": topic,
             "summary": summary,
             "operations": normalized_operations,
+            "no_op_reason": no_op_reason,
             "topic_source_segment_ids": (
                 sorted(new_segment_ids) if topic != existing.topic else []
             ),

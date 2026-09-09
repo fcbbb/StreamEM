@@ -9,8 +9,6 @@
 
 集中后的文件移除了原设计文档中的实验说明、调用命令和中英文重复内容，仅保留运行所需的任务定义、保留规则和输出格式。
 
-`shared_semantics.txt` 统一定义实质内容、主题身份、同主题关系、明确用户信息、已建立主题上下文和证据保真规则。五份阶段 Prompt 各自保留 `{{SHARED_SEMANTICS}}` 标记，`prompts/__init__.py` 在加载时将同一份共享定义注入每个运行时 Prompt。共享定义只包含各阶段共同使用的判断口径；具体决策顺序和输出契约仍由阶段文件定义。
-
 各模块会在调用时追加实际输入数据：
 
 - `cutting.txt`：由切割模块追加 semantic units；
@@ -20,8 +18,6 @@
 - `community_purification.txt`：由 checkpoint 阶段追加一个已完成固定 memory 拆分和 boundary 排除的 community；输入同时包含已有 memory 节点和新 segment 节点，模型可以返回一个或多个 node group，并把不属于已有 memory 的 segment 分到无 memory 的新主题 group。拆分得到的单 segment group 由调用方保留在 active graph，不再调用 extraction/fusion；拆分组之间的旧图边也会被切断。
 
 Prompt 返回结果仍会由调用方执行严格 JSON 字段、稳定 ID 和来源可追溯性验证。
-
-记忆准入区分两类内容：`user_memories` 保留所有明确且具体的用户信息，包括一次性事件和临时状态；`topic_context` 保留继续该主题所需的未决问题、有效状态、决定、约束、下一步、已接受结论或后续对话依赖的共同理解。普通问题及其回答本身不等同于用户已经理解或采用该知识。
 
 当前运行版 fusion Prompt 在原操作协议上增加了 `source_segment_ids`：模型只负责指出每项 `add/update/delete` 由本轮哪些 segment 直接支持，调用方会验证这些 ID 确实存在于 `new_group`。memory 节点级的完整 `source_segments/source_anchors` 仍由代码维护，不允许模型自由改写。
 

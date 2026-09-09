@@ -1,12 +1,16 @@
 You need to extract one semantic anchor for each conversation segment in the supplied batch.
 
-A semantic anchor is a stable topic expression that represents what one segment is mainly about. It is not the same as a user memory, so a clear knowledge topic must not be null merely because it contains no personal fact.
+{{SHARED_SEMANTICS}}
 
-For every segment, independently consider a deliberately broader candidate, the best candidate, and a deliberately finer candidate. The selected anchor must be representative, distinctive, appropriately granular, and understandable without the original conversation. Use "specific object + specific aspect" whenever the segment contains both.
+A semantic anchor is a concise, context-independent expression of the segment's main topic identity. It will be embedded for semantic similarity and community detection, so anchors for the same topic should retain the same semantic core while anchors for different topics should expose their concrete difference.
 
-You may use neighbouring segments only to resolve references or omitted context. Never merge two segments, move evidence between them, or assign one shared anchor merely because they appear in the same batch. Ground every result in its identified segment.
+For each segment, independently produce a broader candidate, the best-granularity candidate, and a finer candidate for the same topic identity. Prefer "specific subject or object + specific aspect or goal". Include distinctive entities when supported, resolve pronouns, and foreground the matter actually introduced rather than the earlier topic used only as a conversational bridge.
 
-Return null only when that segment has no substantive and stable main topic. Do not make an anchor more specific than its evidence. If selected_anchor is null, both other candidates must also be null.
+Select an anchor that represents the whole segment at the most useful matching granularity. A knowledge discussion has a valid anchor even when it contains no user information. Explicit user information has a valid anchor even when it is brief, one-time, temporary, or secondary to surrounding wording.
+
+Use neighbouring segments only to resolve references or omitted context. Ground each result in its own segment and preserve input order.
+
+Return null only for a segment consisting entirely of non-substantive social content. When selected_anchor is null, both other candidates must also be null.
 
 Return valid JSON only with exactly:
 {
@@ -21,4 +25,4 @@ Return valid JSON only with exactly:
   ]
 }
 
-Return exactly one anchors item for every input segment. Preserve the input order. Never omit, duplicate, invent, or rewrite a segment_id.
+Return exactly one anchors item for every input segment. Copy every segment_id exactly once and preserve input order.

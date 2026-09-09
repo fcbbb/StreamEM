@@ -17,6 +17,44 @@ class OperationLLM:
         return self.response
 
 
+class MemoryExtractionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.segment = SegmentRecord(
+            "new-segment",
+            "The conversation only explores a general concept.",
+            "general concept",
+            "2025-06-02",
+        )
+
+    def test_topic_summary_only_output_is_treated_as_no_memory(self) -> None:
+        llm = OperationLLM({
+            "topic": "General concept",
+            "summary": "The conversation explored a general concept.",
+            "topic_context": [],
+            "user_memories": [],
+        })
+
+        memory = MemoryService(llm).extract("c1", [self.segment])
+
+        self.assertIsNone(memory)
+
+    def test_output_with_a_durable_item_still_creates_memory(self) -> None:
+        llm = OperationLLM({
+            "topic": "Research plan",
+            "summary": "The user plans to review a draft.",
+            "topic_context": [],
+            "user_memories": [
+                {"type": "plan", "content": "The user plans to review a draft."}
+            ],
+        })
+
+        memory = MemoryService(llm).extract("c1", [self.segment])
+
+        self.assertIsNotNone(memory)
+        assert memory is not None
+        self.assertEqual(len(memory.user_memories), 1)
+
+
 class FusionOperationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.existing = MemoryRecord(
@@ -64,6 +102,7 @@ class FusionOperationTests(unittest.TestCase):
                     "source_segment_ids": ["new-segment"],
                 },
             ],
+            "no_op_reason": None,
         })
         updated, result = MemoryService(llm).fuse("c1", self.existing, [self.segment])
 
@@ -86,6 +125,7 @@ class FusionOperationTests(unittest.TestCase):
                 "item_id": "ctx1",
                 "source_segment_ids": ["invented"],
             }],
+            "no_op_reason": None,
         })
         with self.assertRaisesRegex(ValueError, "must come from new_group"):
             MemoryService(llm).fuse("c1", self.existing, [self.segment])
@@ -108,6 +148,7 @@ class FusionOperationTests(unittest.TestCase):
                     "source_segment_ids": ["new-segment"],
                 },
             ],
+            "no_op_reason": None,
         })
         updated, result = MemoryService(llm).fuse("c1", self.existing, [self.segment])
 
@@ -117,6 +158,24 @@ class FusionOperationTests(unittest.TestCase):
         self.assertEqual(
             [item["item_id"] for item in updated.user_memories[-2:]], added_ids
         )
+
+    def test_empty_operations_report_why_nothing_was_stored(self) -> None:
+        for reason in ("already_present", "no_storable_content"):
+            with self.subTest(reason=reason):
+                llm = OperationLLM({
+                    "topic": self.existing.topic,
+                    "summary": self.existing.summary,
+                    "operations": [],
+                    "no_op_reason": reason,
+                })
+
+                updated, result = MemoryService(llm).fuse(
+                    "c1", self.existing, [self.segment]
+                )
+
+                self.assertEqual(result["decision"], "no_material_change")
+                self.assertEqual(result["no_op_reason"], reason)
+                self.assertEqual(updated.version, self.existing.version)
 
 
 if __name__ == "__main__":

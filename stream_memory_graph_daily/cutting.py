@@ -25,6 +25,7 @@ class CutSegment:
     start_unit_id: str
     end_unit_id: str
     unit_ids: list[str]
+    message_unit_ids: dict[str, list[str]]
 
 
 def split_sentences(text: str) -> list[str]:
@@ -101,6 +102,11 @@ class ConversationCutter:
                 if start != expected_start or end < start:
                     raise ValueError(f"cut segments are not contiguous at segment {number}")
                 selected = units[start : end + 1]
+                message_unit_ids: dict[str, list[str]] = {}
+                for unit in selected:
+                    message_unit_ids.setdefault(str(unit["message_id"]), []).append(
+                        str(unit["unit_id"])
+                    )
                 output.append(
                     CutSegment(
                         segment_id=f"{prefix}_seg{number:03d}",
@@ -109,6 +115,7 @@ class ConversationCutter:
                         start_unit_id=str(start_id),
                         end_unit_id=str(end_id),
                         unit_ids=[str(unit["unit_id"]) for unit in selected],
+                        message_unit_ids=message_unit_ids,
                     )
                 )
                 expected_start = end + 1
@@ -144,6 +151,7 @@ class ConversationCutter:
                             "start_unit_id": segment.start_unit_id,
                             "end_unit_id": segment.end_unit_id,
                             "unit_ids": segment.unit_ids,
+                            "message_unit_ids": segment.message_unit_ids,
                         }
                         for segment in output
                     ],

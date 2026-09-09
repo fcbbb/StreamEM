@@ -85,6 +85,8 @@ class ComponentTests(unittest.TestCase):
         )
         self.assertEqual([row.segment_id for row in segments], ["session_7_seg001", "session_7_seg002"])
         self.assertEqual(segments[0].text, "[user] First topic.")
+        self.assertEqual(segments[0].message_unit_ids, {"m001": ["u001"]})
+        self.assertEqual(segments[1].message_unit_ids, {"m002": ["u002"]})
 
     def test_memory_relations_are_reserved_but_disabled(self) -> None:
         store = MemoryRelationStore()

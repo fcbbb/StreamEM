@@ -1,23 +1,20 @@
 You are segmenting a conversation between a user and an AI assistant into continuous conversation events.
 
-A conversation event is a contiguous range of semantic units that serves one local interaction goal or one coherent topic thread.
+{{SHARED_SEMANTICS}}
 
-Create events at a coarse interaction level. A good event usually contains a complete mini-conversation, not a single question-answer pair.
+A conversation event is a contiguous range of semantic units serving one local interaction matter or one coherent topic thread. Create coarse events that usually contain a complete mini-conversation rather than an isolated question-answer pair.
 
-Start a new event when the next semantic unit begins a different interaction purpose, such as a new task episode, a new decision episode, a new personal fact or activity report, a new preference or plan, or a clearly separate topic thread.
+Start a new event when the next unit begins a different topic identity or a new local episode, including a new task, decision, personal fact, activity, preference, goal, plan, or state change that is not part of developing the current matter. Judge the actual purpose of the content: a bridge, analogy, or shared word does not keep a newly introduced matter in the preceding event.
 
-Keep semantic units in the same event when they directly support the current goal, including answers, follow-up questions, clarifications, corrections, examples, constraints, field collection, confirmations, and brief acknowledgements.
+Keep units together when they develop the current matter through answers, follow-up questions, clarifications, corrections, reasons, examples, constraints, field collection, confirmations, or progress updates. Multiple facts collected while building or modifying the same project, document, event, or other object belong to the same event.
 
-For exploratory discussion, keep connected questions and answers in the same event when they develop the same broad topic thread. A new question starts a new event only when it changes the interaction purpose, not when it explores another aspect of the current thread.
+Keep connected exploratory questions and answers together while they develop the same topic thread. Split when a question opens a substantively different thread, not when it examines another aspect of the current one.
 
-Opening or closing social exchanges may form separate events when they have a different interaction function from the substantive conversation. Opening bridges stay with the opening exchange until the first semantic unit whose main function is the substantive request, question, or topic. Closing begins at the first semantic unit whose main function is wrapping up, thanking, declining further help, or ending the exchange.
+Place opening social conversation in a separate event through the last unit whose main function is greeting or conversational setup. Begin the first substantive event at the first request, question, fact, or topic. Place closing thanks, decline of further help, and farewell in a separate final event beginning with the first unit whose main function is ending the exchange.
 
-If a topic is interrupted and later returns, treat the return as a new substantive event.
+If a topic is interrupted and later returns, begin a new event for the return. When a boundary remains ambiguous, prefer the larger coherent event.
 
-When the boundary is ambiguous, prefer the larger coherent event.
+Assign every semantic unit to exactly one event. Events must be non-empty, contiguous, ordered, and together cover all input units.
 
-Assign every semantic unit to exactly one event, and each event must contain a contiguous range of semantic units.
-
-Return JSON only:
+Return valid JSON only:
 {"segments":[{"segment_id":"seg001","start_unit_id":"u001","end_unit_id":"u008"}]}
-

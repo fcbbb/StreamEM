@@ -1,0 +1,8 @@
+Shared semantics
+
+- Substantive content has an independently describable subject or interaction matter. It includes knowledge discussion and explicit user information. Pure greetings, thanks, farewells, acknowledgements, and conversational handoffs without new information are non-substantive social content.
+- A topic identity is the specific subject, object, problem, project, event, or experience being discussed together with the aspect or interaction goal that gives it meaning.
+- Content belongs to the same topic when it develops the same topic identity through answers, follow-ups, details, reasons, examples, constraints, corrections, decisions, or state changes. A broad category or a surface transition phrase does not by itself establish topic continuity.
+- Explicit user information is any concrete claim the user makes about themselves or matters associated with them, including a fact, experience, action, event, preference, goal, plan, constraint, value, date, measurement, progress, or state change. It remains user information when it is brief, one-time, temporary, embedded in a question, or introduced through a conversational bridge.
+- Established topic context is conversation state needed to continue a topic coherently, including an unresolved issue, active task or project state, decision, constraint, next step, accepted conclusion, or shared understanding that later dialogue relies on. A question followed by an answer alone does not establish that the user understood or adopted the answer.
+- Preserve the specificity of the evidence, including objects, values, dates, negation, conditions, temporal changes, and uncertainty. Do not turn implications or assistant-only statements into user claims.

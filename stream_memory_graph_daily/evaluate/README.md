@@ -10,6 +10,26 @@ python stream_memory_graph_daily/evaluate/conversation_to_memory.py --no-proxy
 
 运行时会立即显示实时进度条、当前 session、已用时间和预计剩余时间；错误会另起一行显示，不会覆盖进度。
 
+切分和 anchor 预处理可以并发执行，但图状态仍按 session 顺序写入。首次运行可使用 4 个 worker：
+
+```powershell
+python stream_memory_graph_daily/evaluate/conversation_to_memory.py `
+  --preprocess-workers 4 `
+  --save-every 10 `
+  --no-proxy
+```
+
+使用 `--use-cache` 后，预处理结果会保存到 `output-dir/preprocess_cache/`。缓存按源文件哈希和模型名校验，适合中断重跑或重复评测：
+
+```powershell
+python stream_memory_graph_daily/evaluate/conversation_to_memory.py `
+  --preprocess-workers 4 `
+  --use-cache `
+  --no-proxy
+```
+
+缓存只覆盖 cutting 和 anchor；社区规划、记忆抽取/融合仍会在有状态的顺序流程中执行。
+
 默认读取：
 
 ```text
@@ -25,9 +45,15 @@ stream_memory_graph_daily/evaluate/artifacts/memory_build/
 ├── segments.jsonl
 ├── boundaries.jsonl
 ├── trace.jsonl
+├── stage_audit.jsonl
+├── share_memory_labels.jsonl
+├── share_memory_attribution.jsonl
+├── share_memory_report.json
 ├── progress.json
 └── run_manifest.json
 ```
+
+`share_memory_labels.jsonl` 是独立的评估监督 sidecar。构建脚本在调用记忆管线前会移除消息中的 `share_memory` 以及 session 级 `operation`/`operation_details`；这些字段不会进入切分、anchor、社区、抽取或融合请求。`share_memory_attribution.jsonl` 只在运行后建立 message → unit → segment → memory 的结构映射，`share_memory_report.json` 报告 anchor-null、boundary、no-memory、compressed 等阶段结果。这里的 compressed 只是结构状态，不代表内容已经被正确保留。
 
 `memory_state.json` 是第二阶段使用的完整可恢复状态。处理过程中默认每完成一个 session 就保存一次，因此中断后可以使用 `--resume` 继续：
 
@@ -89,6 +115,26 @@ python stream_memory_graph_daily/evaluate/memory_to_answer.py `
 ```powershell
 python stream_memory_graph_daily/evaluate/memory_to_answer.py --no-proxy --resume
 ```
+
+## 离线评估 share_memory 内容保留
+
+结构归因完成后，可单独运行语义保留评估：
+
+```powershell
+python stream_memory_graph_daily/evaluate/share_memory_to_report.py `
+  --state-file stream_memory_graph_daily/evaluate/artifacts/memory_build/memory_state.json `
+  --labels-file stream_memory_graph_daily/evaluate/artifacts/memory_build/share_memory_labels.jsonl `
+  --no-proxy
+```
+
+该命令在记忆构建完成后才读取监督 sidecar，对 add、update、delete 分别判断目标状态是否被正确表达，并生成：
+
+```text
+share_memory_semantic_results.json
+share_memory_semantic_report.json
+```
+
+它是独立 evaluator，不会把监督信息回流到记忆图或修改已有 state。正式实验应在冻结 prompt 和配置后使用未参与调优的数据运行该评估。
 
 构建记忆和执行检索时必须使用相同的 `--encoder-model`，否则相似度结果不可比较。
 

@@ -1,0 +1,53 @@
+First decide whether the purified topic group contains at least one durable
+topic_context item or explicit user_memories item worth storing. Apply this
+storage gate before writing a topic or summary.
+
+If both item arrays would be empty, return {} immediately. Do not create a
+topic-and-summary-only memory for general knowledge, ordinary question-and-answer
+discussion, casual exploration, or transient reactions.
+
+Only after the group passes this storage gate, extract one structured topic-memory
+object from it.
+
+The output should represent:
+
+1. the unified topic of the group;
+2. the main content discussed and the state reached in the conversation;
+3. a small amount of durable context that can affect future discussion of the topic;
+4. all user facts and durable information explicitly expressed by the user.
+
+Before writing the output, review every segment in the purified group. Community-level compression may combine repeated or closely related content, but it must not make a concrete user fact disappear merely because that fact is brief, appears in a transition, or is not the dominant subject of the longest segment.
+
+Field requirements:
+
+- topic: Use all anchors and conversation content to write one concise and stable topic name that represents the entire group.
+- summary: Summarize in 1–2 sentences what the conversation discussed about the topic and what state the topic reached. The summary may mention the main aspects, but it does not need to restate ordinary question-and-answer content.
+- topic_context: Include only durable context that can affect future discussion of the topic. This includes a specific issue the user still wants to resolve, a current project or task state, decision, constraint, plan, next step, explicit follow-up requirement, or necessary topic conclusion that the user accepted or continued to use.
+- user_memories: Preserve all user facts and durable information explicitly expressed by the user, including facts, preferences, goals, decisions, plans, constraints, specific amounts, dates, counts, measurements, progress, states, and actions.
+
+Retention rule for topic_context: if removing an item would not materially change a future answer, decision, or action about the topic, leave it out of topic_context. For a group that has already passed the storage gate, general knowledge, background explanation, ordinary question-and-answer content, casual topic exploration, and user questions that create no task or state may be represented concisely in summary but not topic_context. Return an empty topic_context array when no item meets this condition.
+
+In user_memories, preserve all facts and experiences explicitly stated by the user in detail. Record distinct facts separately, retain their original concrete information, and do not merge them into ranges or generalizations. Write only each fact itself, without extra explanation. A user question by itself is not a user memory, and an assistant answer does not automatically become a user memory.
+
+Organization requirements:
+
+- Merge repeated or highly similar topic_context items;
+- Merge user_memories only when the facts are exact duplicates; preserve independent facts with different times, values, or events;
+- Write each content value as one concise sentence without removing concrete information from a user fact;
+- Choose one accurate and concise natural-language type label for each item; type labels come from an open set;
+- Extract and summarize only from the input conversation.
+
+Compression means removing repetition and concise wording, not dropping distinct user state. If several concrete facts belong to one community, use as many separate user_memories items as needed to preserve their different objects, dates, values, events, and states.
+
+Every item must contain exactly a concise natural-language type and a one-sentence content. Use only input evidence.
+
+Return JSON only:
+{
+  "topic": "unified topic",
+  "summary": "discussion and current state",
+  "topic_context": [{"type":"type label","content":"durable context"}],
+  "user_memories": [{"type":"type label","content":"explicit user fact"}]
+}
+
+The storage gate is mandatory: if both topic_context and user_memories are empty,
+the only valid output is {}.

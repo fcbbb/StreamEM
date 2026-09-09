@@ -13,7 +13,7 @@ import numpy as np
 from .anchoring import AnchorExtractor
 from .community import ConstrainedCommunityPlanner, PlannedCommunity, stable_group_id
 from .config import DailyGraphConfig
-from .cutting import ConversationCutter
+from .cutting import ConversationCutter, CutSegment
 from .encoder import Encoder, HashEncoder
 from .graph import ActiveGraph
 from .llm import JsonLLM
@@ -202,41 +202,123 @@ class DailyMemoryGraph:
         *,
         event_date: str | None = None,
     ) -> dict[str, Any]:
+        prepared = self.prepare_conversation(value, event_date=event_date)
+        return self.ingest_prepared_conversation(prepared)
+
+    def prepare_conversation(
+        self,
+        value: dict[str, Any],
+        *,
+        event_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Run the stateless LLM preprocessing stages for one conversation.
+
+        This method deliberately does not touch graph state. It can therefore
+        be run concurrently for multiple conversations; the returned payload
+        must still be ingested in stream order.
+        """
         conversation_id = str(
             value.get("conversation_id", value.get("session_id", value.get("id", "conversation")))
-        )
-        self._audit_stage(
-            "conversation_input",
-            "received",
-            {"conversation_id": conversation_id, "input": dict(value)},
         )
         resolved_date = normalize_date(event_date or value.get("event_date") or value.get("date"))
         messages = value.get("conversation", value.get("messages"))
         if not isinstance(messages, list):
             raise ValueError(f"conversation {conversation_id} has no message list")
-        cut_segments = self.cutter.cut(conversation_id, messages)
-        self._audit_stage(
-            "cutting",
-            "normalized_result",
+        inference_messages = [
             {
-                "conversation_id": conversation_id,
-                "output": [asdict(cut) for cut in cut_segments],
-            },
+                "turn": int(message.get("turn", index)),
+                "speaker": str(message.get("speaker", message.get("role", "unknown"))),
+                "message": str(
+                    message.get("message", message.get("content", message.get("text", "")))
+                ),
+            }
+            for index, message in enumerate(messages, start=1)
+        ]
+        # Persist only the actual inference view. Evaluation-only annotations
+        # such as share_memory and operation_details must never enter pipeline
+        # prompts, graph state, or replay-oriented stage inputs.
+        audit_events: list[dict[str, Any]] = []
+
+        def collect_audit(stage: str, action: str, values: dict[str, Any]) -> None:
+            audit_events.append({"stage": stage, "action": action, "values": values})
+
+        audit_events.append(
+            {
+                "stage": "conversation_input",
+                "action": "received",
+                "values": {
+                    "conversation_id": conversation_id,
+                    "input": {
+                        "conversation_id": conversation_id,
+                        "event_date": resolved_date,
+                        "messages": inference_messages,
+                    },
+                },
+            }
         )
-        anchors = self.anchor_extractor.extract_many(
+        cutter = ConversationCutter(self.llm, audit_sink=collect_audit)
+        anchor_extractor = AnchorExtractor(self.llm, audit_sink=collect_audit)
+        cut_segments = cutter.cut(conversation_id, inference_messages)
+        audit_events.append(
+            {
+                "stage": "cutting",
+                "action": "normalized_result",
+                "values": {
+                    "conversation_id": conversation_id,
+                    "output": [asdict(cut) for cut in cut_segments],
+                },
+            }
+        )
+        anchors = anchor_extractor.extract_many(
             [
                 {"segment_id": cut.segment_id, "text": cut.text}
                 for cut in cut_segments
             ]
         )
+        return {
+            "conversation_id": conversation_id,
+            "event_date": resolved_date,
+            "cut_segments": [asdict(cut) for cut in cut_segments],
+            "anchors": anchors,
+            "audit_events": audit_events,
+        }
+
+    def ingest_prepared_conversation(self, prepared: dict[str, Any]) -> dict[str, Any]:
+        """Apply a stateless preprocessing result to the mutable graph state."""
+
+        conversation_id = str(prepared.get("conversation_id", "conversation"))
+        resolved_date = normalize_date(prepared.get("event_date"))
+        raw_cut_segments = prepared.get("cut_segments")
+        if not isinstance(raw_cut_segments, list):
+            raise ValueError("prepared conversation has no cut_segments list")
+        raw_anchors = prepared.get("anchors")
+        if not isinstance(raw_anchors, dict):
+            raise ValueError("prepared conversation has no anchors object")
+        cut_segments = [CutSegment(**dict(row)) for row in raw_cut_segments]
+        anchors = {str(key): value for key, value in raw_anchors.items()}
+        for event in prepared.get("audit_events", []):
+            if not isinstance(event, dict):
+                raise ValueError("prepared audit event must be an object")
+            self._audit_stage(
+                str(event["stage"]),
+                str(event["action"]),
+                dict(event.get("values") or {}),
+            )
+
         results = []
         for cut in cut_segments:
             anchor = anchors[cut.segment_id]
             if anchor is None:
                 skipped = {
                     "segment_id": cut.segment_id,
+                    "conversation_id": conversation_id,
+                    "segment_index": cut.segment_index,
                     "event_date": resolved_date,
                     "text": cut.text,
+                    "start_unit_id": cut.start_unit_id,
+                    "end_unit_id": cut.end_unit_id,
+                    "unit_ids": list(cut.unit_ids),
+                    "message_unit_ids": dict(cut.message_unit_ids),
                     "reason": "anchor_is_null",
                 }
                 self.skipped_segments.append(skipped)
@@ -255,15 +337,31 @@ class DailyMemoryGraph:
                         segment_index=cut.segment_index,
                         start_unit_id=cut.start_unit_id,
                         end_unit_id=cut.end_unit_id,
-                        metadata={"unit_ids": cut.unit_ids},
+                        metadata={
+                            "unit_ids": cut.unit_ids,
+                            "message_unit_ids": cut.message_unit_ids,
+                        },
                     )
                 )
             )
+        result_by_segment = {
+            str(result["segment_id"]): result for result in results
+        }
         return {
             "conversation_id": conversation_id,
             "event_date": resolved_date,
             "cut_segments": len(cut_segments),
             "results": results,
+            "segment_mappings": [
+                {
+                    "segment_id": cut.segment_id,
+                    "segment_index": cut.segment_index,
+                    "unit_ids": list(cut.unit_ids),
+                    "message_unit_ids": dict(cut.message_unit_ids),
+                    "ingest_status": result_by_segment[cut.segment_id]["status"],
+                }
+                for cut in cut_segments
+            ],
         }
 
     def _mark_boundaries(
@@ -363,6 +461,7 @@ class DailyMemoryGraph:
                         "memory_id": memory_id,
                         "decision": decision["decision"],
                         "operations": decision["operations"],
+                        "no_op_reason": decision["no_op_reason"],
                         "topic_source_segment_ids": decision[
                             "topic_source_segment_ids"
                         ],
@@ -477,9 +576,13 @@ class DailyMemoryGraph:
             }
 
         focus_node_ids = (
-            set(self.pending_segment_ids)
-            if self.pending_segment_ids
-            else self.active_graph.segment_ids()
+            self.active_graph.segment_ids()
+            if force
+            else (
+                set(self.pending_segment_ids)
+                if self.pending_segment_ids
+                else self.active_graph.segment_ids()
+            )
         )
         state_before = self._state_snapshot()
         plan = self.planner.plan(self.active_graph, focus_node_ids=focus_node_ids)
@@ -608,7 +711,12 @@ class DailyMemoryGraph:
                     # A memory-only purification group is the explicit
                     # "keep existing memory" outcome.
                     continue
-                if purification_was_split and not purified_memory_ids and len(purified_segment_ids) == 1:
+                if (
+                    reason != "finalize"
+                    and purification_was_split
+                    and not purified_memory_ids
+                    and len(purified_segment_ids) == 1
+                ):
                     # A singleton produced by purification has no remaining
                     # community evidence. Keep it active for a future
                     # community, but do not call extraction/fusion on it.
@@ -637,6 +745,11 @@ class DailyMemoryGraph:
                             },
                         },
                     )
+                    # Keep the detached singleton eligible for a later
+                    # checkpoint. It may gain same-topic neighbours before
+                    # the stream ends; finalize processes it as a standalone
+                    # purified community so it cannot remain stranded.
+                    retry_ids.update(purified_segment_ids)
                     continue
                 purified_group = PlannedCommunity(
                     community_id=stable_group_id(
@@ -696,7 +809,11 @@ class DailyMemoryGraph:
         return result
 
     def finalize(self) -> dict[str, Any]:
-        return self.checkpoint(reason="finalize", checkpoint_date=self.current_date)
+        return self.checkpoint(
+            reason="finalize",
+            checkpoint_date=self.current_date,
+            force=bool(self.active_graph.segment_ids()),
+        )
 
     def retrieve(self, query: str, k: int = 10) -> list[dict[str, Any]]:
         if k < 1:
