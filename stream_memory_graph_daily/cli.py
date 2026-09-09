@@ -37,6 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--encoder-model", default="all-MiniLM-L6-v2")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--knn-k", type=int, default=10)
+    parser.add_argument(
+        "--postprocess-workers",
+        type=int,
+        default=1,
+        help="并发执行社区纯化、记忆提取和记忆融合的 worker 数",
+    )
     parser.add_argument("--new-new-threshold", type=float, default=0.5)
     parser.add_argument("--new-memory-threshold", type=float, default=0.5)
     parser.add_argument("--assignment-min-support", type=float, default=0.35)
@@ -48,6 +54,7 @@ def main() -> None:
     args = build_parser().parse_args()
     config = DailyGraphConfig(
         knn_k=args.knn_k,
+        postprocess_workers=args.postprocess_workers,
         new_new_threshold=args.new_new_threshold,
         new_memory_threshold=args.new_memory_threshold,
         assignment_min_support=args.assignment_min_support,

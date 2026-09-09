@@ -19,10 +19,13 @@ class DailyGraphConfig:
     max_assignment_hops: int = 8
     llm_retries: int = 3
     retrieval_rrf_k: int = 60
+    postprocess_workers: int = 1
 
     def __post_init__(self) -> None:
         if self.knn_k < 1:
             raise ValueError("knn_k must be positive")
+        if self.postprocess_workers < 1:
+            raise ValueError("postprocess_workers must be positive")
         for name in (
             "new_new_threshold",
             "new_memory_threshold",

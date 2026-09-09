@@ -10,10 +10,12 @@ from stream_memory_graph_daily.encoder import HashEncoder
 from stream_memory_graph_daily.evaluate.conversation_to_memory import (
     MemoryBuildRunner,
     build_parser as build_memory_parser,
+    discover_conversation_directories,
 )
 from stream_memory_graph_daily.evaluate.memory_to_answer import (
     MemoryEvaluationRunner,
     build_parser as build_evaluation_parser,
+    discover_question_files,
     generate_report,
     load_questions,
 )
@@ -26,6 +28,7 @@ from stream_memory_graph_daily.evaluate.share_memory_to_report import (
     generate_semantic_report,
     load_jsonl,
 )
+from stream_memory_graph_daily.models import SegmentRecord
 from stream_memory_graph_daily.pipeline import DailyMemoryGraph
 
 
@@ -123,6 +126,82 @@ def conversation(session_id: int, event_date: str, text: str) -> dict[str, Any]:
 
 
 class EvaluationAdapterTests(unittest.TestCase):
+    def test_batch_roots_are_discovered_per_persona(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for persona in ("alpha", "beta"):
+                conversation_dir = root / persona / "conversations"
+                conversation_dir.mkdir(parents=True)
+                (conversation_dir / "session_0001.json").write_text("{}", encoding="utf-8")
+                (root / persona / f"evaluation_questions_{persona}.json").write_text(
+                    json.dumps({"questions": {}}), encoding="utf-8"
+                )
+
+            self.assertEqual(
+                discover_conversation_directories(root),
+                [
+                    ("alpha", root / "alpha" / "conversations"),
+                    ("beta", root / "beta" / "conversations"),
+                ],
+            )
+            self.assertEqual(
+                discover_question_files(root),
+                [
+                    ("alpha", root / "alpha" / "evaluation_questions_alpha.json"),
+                    ("beta", root / "beta" / "evaluation_questions_beta.json"),
+                ],
+            )
+
+    def test_single_dataset_directory_is_not_split(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "session_0001.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(discover_conversation_directories(root), [(root.name, root)])
+
+    def test_share_memory_attribution_handles_no_memory_output(self) -> None:
+        pipeline = DailyMemoryGraph(encoder=HashEncoder())
+        pipeline.segments["1_seg001"] = SegmentRecord(
+            segment_id="1_seg001",
+            text="A general discussion.",
+            anchor="general discussion",
+            event_date="2025-06-02",
+            conversation_id="1",
+            segment_index=1,
+            metadata={"unit_ids": ["u001"]},
+            status="no_memory",
+        )
+        pipeline.stage_audit = [
+            {
+                "stage": "cutting",
+                "action": "llm_call",
+                "request": {
+                    "conversation_id": "1",
+                    "units": [{"unit_id": "u001", "message_id": "m001"}],
+                },
+                "normalized_segments": [
+                    {
+                        "segment_id": "1_seg001",
+                        "unit_ids": ["u001"],
+                        "message_unit_ids": {"m001": ["u001"]},
+                    }
+                ],
+            },
+            {
+                "stage": "memory_apply",
+                "action": "no_memory",
+                "input": {"segments": [{"segment_id": "1_seg001"}]},
+                "output": None,
+            },
+        ]
+
+        attributions = build_share_memory_attributions(
+            [{"conversation_id": "1", "message_id": "m001"}],
+            pipeline,
+        )
+
+        self.assertEqual(attributions[0]["memory_apply_actions"], ["no_memory"])
+        self.assertEqual(attributions[0]["structural_stage"], "no_memory")
+
     def test_evaluation_commands_can_disable_environment_proxies(self) -> None:
         self.assertFalse(build_memory_parser().parse_args(["--no-proxy"]).use_proxy)
         self.assertFalse(build_evaluation_parser().parse_args(["--no-proxy"]).use_proxy)

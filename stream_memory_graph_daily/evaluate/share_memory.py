@@ -218,7 +218,12 @@ def build_share_memory_attributions(
                 if event.get("stage_id"):
                     stage_ids.append(str(event["stage_id"]))
                 apply_actions.append(str(event.get("action", "unknown")))
-                decision = event.get("output", {}).get("decision", {})
+                event_output = event.get("output")
+                decision = (
+                    event_output.get("decision", {})
+                    if isinstance(event_output, dict)
+                    else {}
+                )
                 if isinstance(decision, dict):
                     declared_change_segment_ids.update(
                         str(value)

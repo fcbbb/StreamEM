@@ -8,6 +8,8 @@ segment 必须按照 `event_date` 非递减顺序流式写入。当较晚日期�
 
 第一次 checkpoint 会处理首批活动节点。后续 checkpoint 只检查当天新增批次能够触达的图连通区域，因此不会重新处理完全无关的 committed memory。
 
+checkpoint 内部先串行完成社区检测，再并发执行相互独立的社区纯化请求；纯化结果确定后，再并发执行各 purified group 的 memory extraction/fusion 请求。所有 LLM 结果、审计事件、图更新和记忆状态变更都在主线程按 planned group 的稳定顺序提交，失败时仍按社区或 purified group 粒度进入 retry。
+
 ## 活动图
 
 活动图当前只包含两类节点：

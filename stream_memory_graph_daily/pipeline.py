@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
@@ -19,7 +20,7 @@ from .graph import ActiveGraph
 from .llm import JsonLLM
 from .memory import MemoryService, utc_now
 from .models import BoundaryRecord, MemoryRecord, SegmentRecord
-from .purification import CommunityPurifier
+from .purification import CommunityPurifier, PurifiedGroup
 from .relations import MemoryRelationStore
 from .retrieval import BM25, entity_overlap, extract_entities, lex_tokens, rrf_fuse
 
@@ -402,7 +403,74 @@ class DailyMemoryGraph:
         ]
         return anchors or list(memory.source_anchors)
 
-    def _apply_memory_group(
+    def _run_purification_task(
+        self,
+        task: tuple[PlannedCommunity, list[SegmentRecord], list[MemoryRecord]],
+    ) -> tuple[list[PurifiedGroup], list[dict[str, Any]], Exception | None]:
+        """Run one purification request without mutating pipeline state."""
+
+        group, segments, existing_memories = task
+        audit_events: list[dict[str, Any]] = []
+
+        def collect_audit(stage: str, action: str, values: dict[str, Any]) -> None:
+            audit_events.append({"stage": stage, "action": action, "values": values})
+
+        purifier = CommunityPurifier(self.llm, audit_sink=collect_audit)
+        try:
+            purified_groups = purifier.purify(
+                group.community_id,
+                segments,
+                existing_memories,
+            )
+            return purified_groups, audit_events, None
+        except Exception as exc:
+            return [], audit_events, exc
+
+    def _run_memory_task(
+        self,
+        task: tuple[PlannedCommunity, list[SegmentRecord]],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Run one extraction/fusion request without mutating pipeline state."""
+
+        group, segments = task
+        audit_events: list[dict[str, Any]] = []
+
+        def collect_audit(stage: str, action: str, values: dict[str, Any]) -> None:
+            audit_events.append({"stage": stage, "action": action, "values": values})
+
+        service = MemoryService(self.llm, audit_sink=collect_audit)
+        try:
+            if group.memory_ids:
+                if len(group.memory_ids) != 1:
+                    raise AssertionError("planner emitted a multi-memory community")
+                memory_id = next(iter(group.memory_ids))
+                existing = self.memories[memory_id]
+                updated, decision = service.fuse(
+                    group.community_id, existing, segments
+                )
+                return {
+                    "kind": "fused",
+                    "existing_before": existing.to_dict(),
+                    "updated": updated,
+                    "decision": decision,
+                }, audit_events
+
+            return {
+                "kind": "extracted",
+                "memory": service.extract(group.community_id, segments),
+            }, audit_events
+        except Exception as exc:
+            return {"kind": "error", "error": exc}, audit_events
+
+    def _append_task_audits(self, audit_events: list[dict[str, Any]]) -> None:
+        for event in audit_events:
+            self._audit_stage(
+                str(event["stage"]),
+                str(event["action"]),
+                dict(event.get("values") or {}),
+            )
+
+    def _apply_memory_result(
         self,
         group: PlannedCommunity,
         segments: list[SegmentRecord],
@@ -412,20 +480,19 @@ class DailyMemoryGraph:
         *,
         parent_community_id: str,
         purification_group_id: str,
+        result: dict[str, Any],
     ) -> None:
-        """Apply one purified group and keep failures retryable at group granularity."""
+        """Apply one completed LLM result in the main state-owning thread."""
 
         segment_ids = {segment.segment_id for segment in segments}
         try:
-            if group.memory_ids:
-                if len(group.memory_ids) != 1:
-                    raise AssertionError("planner emitted a multi-memory community")
+            if result.get("kind") == "error":
+                raise result["error"]
+            if result.get("kind") == "fused":
                 memory_id = next(iter(group.memory_ids))
-                existing = self.memories[memory_id]
-                existing_before = existing.to_dict()
-                updated, decision = self.memory_service.fuse(
-                    group.community_id, existing, segments
-                )
+                existing_before = result["existing_before"]
+                updated = result["updated"]
+                decision = result["decision"]
                 self.memories[memory_id] = updated
                 self.active_graph.update_memory_topic(
                     memory_id,
@@ -473,7 +540,7 @@ class DailyMemoryGraph:
                 )
                 return
 
-            memory = self.memory_service.extract(group.community_id, segments)
+            memory = result.get("memory")
             if memory is None:
                 self._archive_segments(segment_ids, "no_memory", None)
                 self._audit_stage(
@@ -556,6 +623,32 @@ class DailyMemoryGraph:
             )
             changes.append({**error, "action": "kept_active_after_error"})
 
+    def _apply_memory_group(
+        self,
+        group: PlannedCommunity,
+        segments: list[SegmentRecord],
+        checkpoint_date: str,
+        changes: list[dict[str, Any]],
+        retry_ids: set[str],
+        *,
+        parent_community_id: str,
+        purification_group_id: str,
+    ) -> None:
+        """Run and apply one memory task synchronously for compatibility."""
+
+        result, audit_events = self._run_memory_task((group, segments))
+        self._append_task_audits(audit_events)
+        self._apply_memory_result(
+            group,
+            segments,
+            checkpoint_date,
+            changes,
+            retry_ids,
+            parent_community_id=parent_community_id,
+            purification_group_id=purification_group_id,
+            result=result,
+        )
+
     def checkpoint(
         self,
         *,
@@ -620,39 +713,63 @@ class DailyMemoryGraph:
         changes: list[dict[str, Any]] = []
         retry_ids: set[str] = set()
 
+        purification_tasks: list[
+            tuple[PlannedCommunity, list[SegmentRecord], list[MemoryRecord]]
+        ] = []
         for group in plan.communities:
             segment_ids = set(group.segment_ids) - set(plan.boundaries)
             if not segment_ids:
                 continue
             segments = [self.segments[segment_id] for segment_id in sorted(segment_ids)]
-            try:
-                existing_memories = [
-                    self.memories[memory_id]
-                    for memory_id in sorted(group.memory_ids)
-                ]
-                purified_groups = self.community_purifier.purify(
-                    group.community_id,
-                    segments,
-                    existing_memories,
+            existing_memories = [
+                self.memories[memory_id]
+                for memory_id in sorted(group.memory_ids)
+            ]
+            purification_tasks.append((group, segments, existing_memories))
+
+        if self.config.postprocess_workers > 1 and len(purification_tasks) > 1:
+            with ThreadPoolExecutor(
+                max_workers=self.config.postprocess_workers
+            ) as executor:
+                purification_results = list(
+                    executor.map(self._run_purification_task, purification_tasks)
                 )
-            except Exception as exc:
+        else:
+            purification_results = [
+                self._run_purification_task(task) for task in purification_tasks
+            ]
+
+        purified_communities: list[
+            tuple[PlannedCommunity, list[SegmentRecord], list[PurifiedGroup]]
+        ] = []
+        for task, task_result in zip(purification_tasks, purification_results):
+            group, segments, _ = task
+            purified_groups, audit_events, error = task_result
+            self._append_task_audits(audit_events)
+            if error is not None:
+                segment_ids = {segment.segment_id for segment in segments}
                 retry_ids.update(segment_ids)
-                error = {
+                error_row = {
                     "at": utc_now(),
                     "checkpoint_date": checkpoint_date,
                     "community_id": group.community_id,
                     "segment_ids": sorted(segment_ids),
                     "stage": "community_purification",
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
+                    "error_type": type(error).__name__,
+                    "error": str(error),
                 }
-                self.llm_errors.append(error)
+                self.llm_errors.append(error_row)
                 self._audit_stage(
                     "community_purification",
                     "error",
-                    error,
+                    error_row,
                 )
-                changes.append({**error, "action": "kept_active_after_purification_error"})
+                changes.append(
+                    {
+                        **error_row,
+                        "action": "kept_active_after_purification_error",
+                    }
+                )
                 continue
 
             purification_output = [
@@ -671,7 +788,7 @@ class DailyMemoryGraph:
                     "checkpoint_date": checkpoint_date,
                     "parent_community_id": group.community_id,
                     "memory_ids": sorted(group.memory_ids),
-                    "input_segment_ids": sorted(segment_ids),
+                    "input_segment_ids": sorted(segment.segment_id for segment in segments),
                     "input_memory_ids": sorted(group.memory_ids),
                     "output_groups": purification_output,
                 },
@@ -679,12 +796,11 @@ class DailyMemoryGraph:
             self._trace(
                 "community_purified",
                 community_id=group.community_id,
-                input_segment_ids=sorted(segment_ids),
+                input_segment_ids=sorted(segment.segment_id for segment in segments),
                 output_groups=purification_output,
             )
 
-            purification_was_split = len(purified_groups) > 1
-            if purification_was_split:
+            if len(purified_groups) > 1:
                 removed_edges = self.active_graph.cut_cross_group_edges(
                     [set(purified.node_ids) for purified in purified_groups]
                 )
@@ -703,7 +819,12 @@ class DailyMemoryGraph:
                         community_id=group.community_id,
                         removed_edges=removed_edges,
                     )
+            purified_communities.append((group, segments, purified_groups))
 
+        memory_tasks: list[tuple[PlannedCommunity, list[SegmentRecord]]] = []
+        memory_contexts: list[tuple[str, str]] = []
+        for group, _, purified_groups in purified_communities:
+            purification_was_split = len(purified_groups) > 1
             for purified in purified_groups:
                 purified_segment_ids = set(purified.segment_ids)
                 purified_memory_ids = set(purified.memory_ids)
@@ -763,15 +884,32 @@ class DailyMemoryGraph:
                     self.segments[segment_id]
                     for segment_id in sorted(purified_segment_ids)
                 ]
-                self._apply_memory_group(
-                    purified_group,
-                    purified_segments,
-                    checkpoint_date,
-                    changes,
-                    retry_ids,
-                    parent_community_id=group.community_id,
-                    purification_group_id=purified.group_id,
-                )
+                memory_tasks.append((purified_group, purified_segments))
+                memory_contexts.append((group.community_id, purified.group_id))
+
+        if self.config.postprocess_workers > 1 and len(memory_tasks) > 1:
+            with ThreadPoolExecutor(
+                max_workers=self.config.postprocess_workers
+            ) as executor:
+                memory_results = list(executor.map(self._run_memory_task, memory_tasks))
+        else:
+            memory_results = [self._run_memory_task(task) for task in memory_tasks]
+
+        for (group, segments), (parent_community_id, purification_group_id), (
+            memory_result,
+            audit_events,
+        ) in zip(memory_tasks, memory_contexts, memory_results):
+            self._append_task_audits(audit_events)
+            self._apply_memory_result(
+                group,
+                segments,
+                checkpoint_date,
+                changes,
+                retry_ids,
+                parent_community_id=parent_community_id,
+                purification_group_id=purification_group_id,
+                result=memory_result,
+            )
 
         self.pending_segment_ids = retry_ids
         self.checkpoint_count += 1

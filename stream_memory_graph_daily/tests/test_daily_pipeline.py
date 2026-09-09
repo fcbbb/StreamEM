@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -450,6 +452,102 @@ class DailyPipelineTests(unittest.TestCase):
         }
         self.assertEqual(assignments, {"m-a": {"bridge"}, "m-b": {"support-b"}})
         self.assertEqual(boundaries, {})
+
+    def test_postprocess_stages_run_concurrently_and_commit_in_order(self) -> None:
+        class ConcurrentLLM(MemoryFakeLLM):
+            def __init__(self) -> None:
+                super().__init__()
+                self.lock = threading.Lock()
+                self.active: dict[str, int] = {}
+                self.maximum: dict[str, int] = {}
+
+            def _enter(self, stage: str) -> None:
+                with self.lock:
+                    active = self.active.get(stage, 0) + 1
+                    self.active[stage] = active
+                    self.maximum[stage] = max(self.maximum.get(stage, 0), active)
+
+            def _leave(self, stage: str) -> None:
+                with self.lock:
+                    self.active[stage] -= 1
+
+            def complete(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+                if system_prompt.startswith("Conservatively partition one graph community"):
+                    stage = "purification"
+                    self._enter(stage)
+                    try:
+                        time.sleep(0.03)
+                        payload = self._payload(user_prompt)
+                        return {
+                            "groups": [{
+                                "group_id": payload["community_id"],
+                                "node_ids": [
+                                    *[row["node_id"] for row in payload["memory_nodes"]],
+                                    *[row["node_id"] for row in payload["segment_nodes"]],
+                                ],
+                            }]
+                        }
+                    finally:
+                        self._leave(stage)
+                if system_prompt.startswith("You maintain structured memory"):
+                    stage = "fusion"
+                    self._enter(stage)
+                    try:
+                        time.sleep(0.03)
+                        with self.lock:
+                            self.fusions += 1
+                        payload = self._payload(user_prompt)
+                        existing = payload["existing_memory"]
+                        return {
+                            "topic": existing["topic"],
+                            "summary": existing["summary"],
+                            "operations": [],
+                            "no_op_reason": "already_present",
+                        }
+                    finally:
+                        self._leave(stage)
+                raise AssertionError(f"unexpected prompt: {system_prompt[:60]}")
+
+        llm = ConcurrentLLM()
+        config = DailyGraphConfig(postprocess_workers=2)
+        pipeline = DailyMemoryGraph(llm=llm, config=config)
+        memories = {
+            "m-a": MemoryRecord("m-a", "topic a", "summary a"),
+            "m-b": MemoryRecord("m-b", "topic b", "summary b"),
+        }
+        pipeline.memories = memories
+        pipeline.active_graph.add_memory("m-a", "topic a")
+        pipeline.active_graph.add_memory("m-b", "topic b")
+        pipeline.ingest_segment(SegmentRecord("s-a", "A", "topic a", "2025-06-01"))
+        pipeline.ingest_segment(SegmentRecord("s-b", "B", "topic b", "2025-06-01"))
+
+        class FixedPlanner:
+            def plan(self, active: Any, focus_node_ids: set[str] | None = None) -> CommunityPlan:
+                return CommunityPlan(
+                    communities=[
+                        PlannedCommunity("community:a", {"m-a"}, {"s-a"}, "test"),
+                        PlannedCommunity("community:b", {"m-b"}, {"s-b"}, "test"),
+                    ],
+                    boundaries={},
+                    cannot_link_memory_pairs=set(),
+                    detected_communities=[{"m-a", "s-a"}, {"m-b", "s-b"}],
+                    affected_node_ids={"m-a", "m-b", "s-a", "s-b"},
+                )
+
+        pipeline.planner = FixedPlanner()
+        result = pipeline.checkpoint(reason="manual", checkpoint_date="2025-06-01")
+
+        self.assertEqual(llm.maximum["purification"], 2)
+        self.assertEqual(llm.maximum["fusion"], 2)
+        self.assertEqual(llm.fusions, 2)
+        self.assertEqual(
+            [row["memory_id"] for row in result["changes"]],
+            ["m-a", "m-b"],
+        )
+        self.assertEqual(
+            [row["stage_id"] for row in pipeline.stage_audit],
+            [f"stage:{index:08d}" for index in range(1, len(pipeline.stage_audit) + 1)],
+        )
 
     def test_state_round_trip_rebuilds_topic_graph(self) -> None:
         llm = MemoryFakeLLM()

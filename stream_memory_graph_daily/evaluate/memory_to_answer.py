@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import sys
@@ -98,6 +99,30 @@ def load_questions(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     metadata = {key: value for key, value in data.items() if key != "questions"}
     metadata["total_questions"] = len(questions)
     return metadata, questions
+
+
+def discover_question_files(path: Path) -> list[tuple[str, Path]]:
+    """Discover one question file or all persona question files under a root."""
+    path = path.resolve()
+    if path.is_file():
+        return [(path.stem.removeprefix("evaluation_questions_"), path)]
+    if not path.is_dir():
+        raise FileNotFoundError(f"评测问题路径不存在：{path}")
+
+    files = list(path.glob("evaluation_questions_*.json"))
+    files.extend(
+        question_file
+        for child in sorted(path.iterdir(), key=lambda item: item.name)
+        if child.is_dir()
+        for question_file in child.glob("evaluation_questions_*.json")
+    )
+    files = sorted(set(files), key=lambda item: item.as_posix())
+    if not files:
+        raise FileNotFoundError(f"目录下没有找到 evaluation_questions_*.json：{path}")
+    return [
+        (question_file.stem.removeprefix("evaluation_questions_"), question_file)
+        for question_file in files
+    ]
 
 
 def filter_questions(
@@ -215,6 +240,8 @@ class MemoryEvaluationRunner:
         answer_llm: JsonLLM | None,
         judge_llm: JsonLLM | None,
         top_k: int = 10,
+        judge_workers: int = 1,
+        question_workers: int = 4,
         retrieval_only: bool = False,
         skip_judge: bool = False,
         metadata: dict[str, Any] | None = None,
@@ -224,6 +251,8 @@ class MemoryEvaluationRunner:
         self.answer_llm = answer_llm
         self.judge_llm = judge_llm
         self.top_k = max(1, int(top_k))
+        self.judge_workers = max(1, int(judge_workers))
+        self.question_workers = max(1, int(question_workers))
         self.retrieval_only = retrieval_only
         self.skip_judge = skip_judge
         self.metadata = dict(metadata or {})
@@ -264,20 +293,25 @@ class MemoryEvaluationRunner:
         if self.answer_llm is None:
             raise RuntimeError("回答生成需要 LLM；或者使用 --retrieval-only")
         value = self.answer_llm.complete(
-            """You answer questions using only the supplied structured user memories.
-Do not use outside knowledge or invent facts. Preserve concrete dates, amounts,
-counts, states, and distinctions between current and historical information.
-For recommendations, explain them only from the supplied preferences or history.
-If the memories are insufficient, say so. Return JSON only: {\"answer\":\"...\"}.""",
-            json.dumps(
-                {
-                    "question": question,
-                    "question_date": question_date,
-                    "retrieved_memories": memories,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            """You are a helpful AI assistant with access to a user's personal memory system.
+
+Your task is to answer questions based ONLY on the user's stored memories and preferences.
+
+Guidelines:
+1. Use ONLY the information from the provided memories.
+2. Be specific and reference actual items or preferences from memory.
+3. If the question is about recommendations, suggest based on similar items in memory.
+4. Be conversational and helpful.
+5. Don't make up information that is not in the memories.
+6. If the memories are insufficient, say so.
+
+Return JSON only with exactly this structure: {\"answer\":\"...\"}.""",
+            f"""User's Question: {question}
+
+User's Relevant Memories:
+{json.dumps(memories, ensure_ascii=False, indent=2)}
+
+Please provide a helpful answer based on these memories. Return JSON only with exactly this structure: {{\"answer\":\"...\"}}.""",
         )
         if set(value) != {"answer"} or not isinstance(value["answer"], str):
             raise ValueError("回答模型必须只返回字符串字段 answer")
@@ -289,17 +323,25 @@ If the memories are insufficient, say so. Return JSON only: {\"answer\":\"...\"}
         if self.judge_llm is None:
             raise RuntimeError("执行评测需要 judge LLM；或者使用 --skip-judge")
         value = self.judge_llm.complete(
-            """You are an objective evaluator. Answer the supplied yes/no evaluation
-question about the candidate response. Return JSON only with exactly:
-{\"answer\":\"yes or no\",\"confidence\":0.0,\"explanation\":\"...\"}.""",
-            json.dumps(
-                {
-                    "candidate_response": answer,
-                    "evaluation_question": evaluation.get("evaluation_question", ""),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            """You are an expert evaluator assessing AI assistant responses. Your task is to answer a YES/NO evaluation question about a given response.
+
+You must provide your answer in the following JSON format:
+{
+    \"answer\": \"yes\" or \"no\",
+    \"confidence\": 0.0 to 1.0,
+    \"explanation\": \"Brief explanation of your reasoning\"
+}
+
+Be objective and thorough in your evaluation.""",
+            f"""Please evaluate the following AI response against the evaluation question.
+
+AI RESPONSE TO EVALUATE:
+{answer}
+
+EVALUATION QUESTION:
+{evaluation.get("evaluation_question", "")}
+
+Provide your evaluation in JSON format with answer (yes/no), confidence (0.0-1.0), and explanation.""",
         )
         if set(value) != {"answer", "confidence", "explanation"}:
             raise ValueError("judge 输出字段不符合约定")
@@ -343,9 +385,20 @@ question about the candidate response. Return JSON only with exactly:
         evaluations: list[dict[str, Any]] = []
         if answer and not self.skip_judge:
             rows = question.get("evaluation", {}).get("evaluation_questions", [])
-            for row in rows:
-                result = self.judge(answer, row)
-                evaluations.append({**row, "evaluation_result": result})
+            if self.judge_workers == 1 or len(rows) <= 1:
+                judged_rows = [self.judge(answer, row) for row in rows]
+            else:
+                # Judge calls are independent network requests. Submit them in
+                # parallel, while collecting futures in input order so the
+                # result schema remains deterministic.
+                worker_count = min(self.judge_workers, len(rows))
+                with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                    futures = [executor.submit(self.judge, answer, row) for row in rows]
+                    judged_rows = [future.result() for future in futures]
+            evaluations = [
+                {**row, "evaluation_result": result}
+                for row, result in zip(rows, judged_rows)
+            ]
 
         memory_rows = [
             row for row in evaluations if row.get("evaluation_type") == "memory_presence"
@@ -416,38 +469,56 @@ question about the candidate response. Return JSON only with exactly:
             results = list(saved.get("results", []))
         completed = {str(row.get("question_id")) for row in results}
         progress_bar = ConsoleProgress(len(questions), "回答评测")
-        for position, question in enumerate(questions, start=1):
-            question_id = str(question.get("question_id", ""))
-            if question_id in completed:
-                progress_bar.update(position, f"{question_id} 已存在")
-                continue
-            progress_bar.update(position - 1, f"{question_id} 处理中")
-            try:
-                result = self.process_question(question)
-                progress_bar.update(
-                    position,
-                    f"{question_id} 完成，"
-                    f"检索记忆={result['memories_retrieved']}，"
-                    f"评测项={len(result['evaluation_questions'])}"
-                )
-            except Exception as exc:
-                result = {
-                    "question_id": question_id,
-                    "task_type": question.get("task_type"),
-                    "question": question.get("question"),
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                    "processed_at": utc_now(),
-                }
-                progress_bar.write(f"{question_id} 失败：{exc}")
-                progress_bar.update(position, f"{question_id} 失败")
+        pending = [
+            (position, question, str(question.get("question_id", "")))
+            for position, question in enumerate(questions, start=1)
+            if str(question.get("question_id", "")) not in completed
+        ]
+        completed_count = len(questions) - len(pending)
+        if completed_count:
+            progress_bar.update(completed_count, f"已跳过 {completed_count} 个已完成问题")
+        if not pending:
+            progress_bar.finish(f"完成：结果 {len(results)}，失败 {sum('error' in row for row in results)}")
+            return results
+
+        worker_count = min(self.question_workers, len(pending))
+        progress_bar.update(
+            completed_count,
+            f"已提交 {len(pending)} 个问题，题目并发数={worker_count}",
+        )
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(self.process_question, question): (position, question, question_id)
+                for position, question, question_id in pending
+            }
+            for future in as_completed(futures):
+                _, question, question_id = futures[future]
+                try:
+                    result = future.result()
+                    status = (
+                        f"{question_id} 完成，"
+                        f"检索记忆={result['memories_retrieved']}，"
+                        f"评测项={len(result['evaluation_questions'])}"
+                    )
+                except Exception as exc:
+                    result = {
+                        "question_id": question_id,
+                        "task_type": question.get("task_type"),
+                        "question": question.get("question"),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "processed_at": utc_now(),
+                    }
+                    progress_bar.write(f"{question_id} 失败：{exc}")
+                    status = f"{question_id} 失败"
+                    if fail_fast:
+                        for other in futures:
+                            other.cancel()
+                        raise
                 results.append(result)
+                completed_count += 1
+                progress_bar.update(completed_count, status)
                 self.persist(results)
-                if fail_fast:
-                    raise
-                continue
-            results.append(result)
-            self.persist(results)
         failed = sum("error" in row for row in results)
         progress_bar.finish(f"完成：结果 {len(results)}，失败 {failed}")
         return results
@@ -465,6 +536,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("Remembering", "Reasoning", "Recommending"),
     )
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument(
+        "--judge-workers",
+        type=int,
+        default=1,
+        help="并行执行每道题的 Judge 请求数（默认：1；题目并发时建议保持为 1）",
+    )
+    parser.add_argument(
+        "--question-workers",
+        type=int,
+        default=4,
+        help="并行处理的问题数（默认：4；设为 1 可关闭并行）",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--retrieval-only", action="store_true")
@@ -486,19 +569,86 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_question_evaluation(
+    args: argparse.Namespace,
+    *,
+    persona: str,
+    questions_file: Path,
+    state_file: Path,
+    output_dir: Path,
+    encoder: Any,
+    answer_llm: Any,
+    judge_llm: Any,
+) -> dict[str, Any]:
+    if not state_file.is_file():
+        raise FileNotFoundError(
+            f"记忆状态不存在：{state_file}\n"
+            "请先运行 evaluate/conversation_to_memory.py。"
+        )
+    pipeline = DailyMemoryGraph.load(state_file, encoder=encoder)
+    question_metadata, questions = load_questions(questions_file)
+    questions = filter_questions(
+        questions,
+        task_types=set(args.task_type or []),
+        limit=args.limit,
+    )
+    if not questions:
+        raise ValueError("筛选后没有评测问题")
+    metadata = {
+        **question_metadata,
+        "persona": persona,
+        "memory_system": "stream_memory_graph_daily",
+        "memory_state_file": str(state_file.resolve()),
+        "questions_file": str(questions_file.resolve()),
+        "answer_model": None if args.retrieval_only else args.answer_model,
+        "judge_model": None if args.skip_judge or args.retrieval_only else args.judge_model,
+        "encoder_model": args.encoder_model,
+        "top_k": args.top_k,
+        "judge_workers": args.judge_workers,
+        "question_workers": args.question_workers,
+        "retrieval_only": args.retrieval_only,
+        "skip_judge": args.skip_judge,
+        "use_proxy": args.use_proxy,
+        "selected_questions": len(questions),
+    }
+    runner = MemoryEvaluationRunner(
+        pipeline,
+        output_dir,
+        answer_llm=answer_llm,
+        judge_llm=judge_llm,
+        top_k=args.top_k,
+        judge_workers=args.judge_workers,
+        question_workers=args.question_workers,
+        retrieval_only=args.retrieval_only,
+        skip_judge=args.skip_judge,
+        metadata=metadata,
+    )
+    results = runner.run(questions, resume=args.resume, fail_fast=args.fail_fast)
+    report = generate_report(results, metadata)
+    print(json.dumps(report["overall_metrics"], ensure_ascii=False, indent=2))
+    print(f"详细结果：{runner.results_file}")
+    print(f"汇总报告：{runner.report_file}")
+    return report
+
+
 def main() -> None:
     args = build_parser().parse_args()
+    if args.judge_workers < 1 or args.question_workers < 1:
+        raise ValueError("--judge-workers 和 --question-workers 必须为正整数")
     load_env(args.env_file)
     api_key = args.api_key or os.getenv("LOCAL_OPENAI_API_KEY")
     base_url = args.base_url or os.getenv("LOCAL_OPENAI_BASE_URL")
-    if not args.state_file.is_file():
-        raise FileNotFoundError(
-            f"记忆状态不存在：{args.state_file}\n"
-            "请先运行 evaluate/conversation_to_memory.py。"
-        )
-    encoder = load_encoder(args.encoder_model, args.device)
-    pipeline = DailyMemoryGraph.load(args.state_file, encoder=encoder)
+    question_files = discover_question_files(args.questions_file)
+    batch_mode = len(question_files) > 1
+    output_root = args.output_dir.resolve()
 
+    if batch_mode:
+        state_arg = args.state_file.resolve()
+        state_root = state_arg.parent if state_arg.name == "memory_state.json" else state_arg
+    else:
+        state_root = args.state_file.resolve()
+
+    encoder = load_encoder(args.encoder_model, args.device)
     need_answer_llm = not args.retrieval_only
     need_judge_llm = need_answer_llm and not args.skip_judge
     answer_llm = OpenAIJsonLLM(
@@ -520,43 +670,34 @@ def main() -> None:
         env_file=args.env_file,
     ) if need_judge_llm else None
 
-    question_metadata, questions = load_questions(args.questions_file)
-    questions = filter_questions(
-        questions,
-        task_types=set(args.task_type or []),
-        limit=args.limit,
-    )
-    if not questions:
-        raise ValueError("筛选后没有评测问题")
-    metadata = {
-        **question_metadata,
-        "memory_system": "stream_memory_graph_daily",
-        "memory_state_file": str(args.state_file.resolve()),
-        "questions_file": str(args.questions_file.resolve()),
-        "answer_model": None if args.retrieval_only else args.answer_model,
-        "judge_model": None if args.skip_judge or args.retrieval_only else args.judge_model,
-        "encoder_model": args.encoder_model,
-        "top_k": args.top_k,
-        "retrieval_only": args.retrieval_only,
-        "skip_judge": args.skip_judge,
-        "use_proxy": args.use_proxy,
-        "selected_questions": len(questions),
-    }
-    runner = MemoryEvaluationRunner(
-        pipeline,
-        args.output_dir,
-        answer_llm=answer_llm,
-        judge_llm=judge_llm,
-        top_k=args.top_k,
-        retrieval_only=args.retrieval_only,
-        skip_judge=args.skip_judge,
-        metadata=metadata,
-    )
-    results = runner.run(questions, resume=args.resume, fail_fast=args.fail_fast)
-    report = generate_report(results, metadata)
-    print(json.dumps(report["overall_metrics"], ensure_ascii=False, indent=2))
-    print(f"详细结果：{runner.results_file}")
-    print(f"汇总报告：{runner.report_file}")
+    results: dict[str, Any] = {}
+    for persona, questions_file in question_files:
+        state_file = (
+            state_root / persona / "memory_state.json"
+            if batch_mode
+            else state_root
+        )
+        output_dir = output_root / persona if batch_mode else output_root
+        print(f"\n===== 评测：{persona} =====")
+        try:
+            results[persona] = _run_question_evaluation(
+                args,
+                persona=persona,
+                questions_file=questions_file,
+                state_file=state_file,
+                output_dir=output_dir,
+                encoder=encoder,
+                answer_llm=answer_llm,
+                judge_llm=judge_llm,
+            )
+        except Exception as exc:
+            results[persona] = {"error": str(exc)}
+            print(f"{persona} 失败：{exc}")
+            if args.fail_fast:
+                raise
+
+    if batch_mode:
+        print(json.dumps(results, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

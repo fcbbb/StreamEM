@@ -104,6 +104,31 @@ def select_session_files(
     return files
 
 
+def discover_conversation_directories(directory: Path) -> list[tuple[str, Path]]:
+    """Return one or more dataset names and conversation directories.
+
+    A normal persona directory contains ``conversations/session_*.json`` and
+    is returned as one dataset.  A directory containing persona subdirectories
+    is treated as a batch root; each persona is kept as a separate dataset so
+    its memory state cannot be mixed with another persona's state.
+    """
+    directory = directory.resolve()
+    if not directory.is_dir():
+        raise FileNotFoundError(f"对话目录不存在：{directory}")
+
+    datasets: list[tuple[str, Path]] = []
+    for child in sorted(directory.iterdir(), key=lambda path: path.name):
+        if not child.is_dir():
+            continue
+        conversation_dir = child / "conversations"
+        if conversation_dir.is_dir() and any(conversation_dir.rglob("session_*.json")):
+            datasets.append((child.name, conversation_dir))
+
+    if datasets:
+        return datasets
+    return [(directory.name, directory)]
+
+
 class MemoryBuildRunner:
     """运行对话建图，并在每个 session 后保存可恢复状态。"""
 
@@ -432,6 +457,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="并发执行 cutting/anchor 预处理的 worker 数；图写入仍按 session 顺序进行",
     )
     parser.add_argument(
+        "--postprocess-workers",
+        type=int,
+        default=1,
+        help="并发执行社区纯化、记忆提取和记忆融合的 worker 数；状态提交仍按稳定顺序进行",
+    )
+    parser.add_argument(
         "--use-cache",
         action="store_true",
         help="启用 session 预处理缓存，缓存按源文件哈希和模型名校验",
@@ -463,23 +494,73 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_memory_build(
+    args: argparse.Namespace,
+    *,
+    dataset_name: str,
+    conversation_directory: Path,
+    output_dir: Path,
+    state_file: Path,
+    progress_file: Path,
+    cache_dir: Path,
+    encoder: Any,
+    llm: Any,
+    config: DailyGraphConfig,
+) -> dict[str, Any]:
+    if args.resume:
+        if not state_file.is_file():
+            raise FileNotFoundError(f"--resume 指定的状态文件不存在：{state_file}")
+        pipeline = DailyMemoryGraph.load(state_file, llm=llm, encoder=encoder)
+    else:
+        pipeline = DailyMemoryGraph(llm=llm, encoder=encoder, config=config)
+
+    files = select_session_files(
+        conversation_directory,
+        session_range=args.session_range,
+        limit=args.limit,
+    )
+    runner = MemoryBuildRunner(
+        pipeline,
+        output_dir,
+        state_file=state_file,
+        progress_file=progress_file,
+        save_every=args.save_every,
+        resume_progress=args.resume,
+        preprocess_workers=args.preprocess_workers,
+        use_cache=args.use_cache,
+        cache_dir=cache_dir,
+        metadata={
+            "dataset_name": dataset_name,
+            "conversation_directory": str(conversation_directory.resolve()),
+            "selected_session_count": len(files),
+            "llm_model": None if args.no_llm else args.llm_model,
+            "encoder_model": args.encoder_model,
+            "use_proxy": args.use_proxy,
+            "preprocess_workers": args.preprocess_workers,
+            "postprocess_workers": args.postprocess_workers,
+            "use_cache": args.use_cache,
+            "cache_dir": str(cache_dir),
+        },
+    )
+    return runner.run(files, fail_fast=args.fail_fast)
+
+
 def main() -> None:
     args = build_parser().parse_args()
     load_env(args.env_file)
     api_key = args.api_key or os.getenv("LOCAL_OPENAI_API_KEY")
     base_url = args.base_url or os.getenv("LOCAL_OPENAI_BASE_URL")
-    output_dir = args.output_dir.resolve()
-    state_file = (args.state_file or output_dir / "memory_state.json").resolve()
-    progress_file = (args.progress_file or output_dir / "progress.json").resolve()
-    cache_dir = (
-        args.cache_dir.resolve()
-        if args.cache_dir
-        else output_dir / "preprocess_cache"
-    )
+    output_root = args.output_dir.resolve()
+    datasets = discover_conversation_directories(args.conversation_directory)
+    batch_mode = len(datasets) > 1
+
     if args.preprocess_workers < 1:
         raise ValueError("--preprocess-workers 必须为正整数")
+    if args.postprocess_workers < 1:
+        raise ValueError("--postprocess-workers 必须为正整数")
     config = DailyGraphConfig(
         knn_k=args.knn_k,
+        postprocess_workers=args.postprocess_workers,
         new_new_threshold=args.new_new_threshold,
         new_memory_threshold=args.new_memory_threshold,
         assignment_min_support=args.assignment_min_support,
@@ -496,41 +577,56 @@ def main() -> None:
         use_proxy=args.use_proxy,
         env_file=args.env_file,
     )
-    if args.resume:
-        if not state_file.is_file():
-            raise FileNotFoundError(f"--resume 指定的状态文件不存在：{state_file}")
-        pipeline = DailyMemoryGraph.load(state_file, llm=llm, encoder=encoder)
-    else:
-        pipeline = DailyMemoryGraph(llm=llm, encoder=encoder, config=config)
 
-    files = select_session_files(
-        args.conversation_directory,
-        session_range=args.session_range,
-        limit=args.limit,
+    results: dict[str, Any] = {}
+    state_root = (
+        args.state_file.resolve().parent
+        if args.state_file and args.state_file.name == "memory_state.json"
+        else args.state_file.resolve() if args.state_file else None
     )
-    runner = MemoryBuildRunner(
-        pipeline,
-        output_dir,
-        state_file=state_file,
-        progress_file=progress_file,
-        save_every=args.save_every,
-        resume_progress=args.resume,
-        preprocess_workers=args.preprocess_workers,
-        use_cache=args.use_cache,
-        cache_dir=cache_dir,
-        metadata={
-            "conversation_directory": str(args.conversation_directory.resolve()),
-            "selected_session_count": len(files),
-            "llm_model": None if args.no_llm else args.llm_model,
-            "encoder_model": args.encoder_model,
-            "use_proxy": args.use_proxy,
-            "preprocess_workers": args.preprocess_workers,
-            "use_cache": args.use_cache,
-            "cache_dir": str(cache_dir),
-        },
+    progress_root = (
+        args.progress_file.resolve().parent
+        if args.progress_file and args.progress_file.name == "progress.json"
+        else args.progress_file.resolve() if args.progress_file else None
     )
-    result = runner.run(files, fail_fast=args.fail_fast)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    for dataset_name, conversation_directory in datasets:
+        output_dir = output_root / dataset_name if batch_mode else output_root
+        state_file = (
+            (state_root / dataset_name / "memory_state.json")
+            if batch_mode and state_root
+            else (output_dir / "memory_state.json")
+        )
+        progress_file = (
+            (progress_root / dataset_name / "progress.json")
+            if batch_mode and progress_root
+            else (output_dir / "progress.json")
+        )
+        cache_dir = (
+            (args.cache_dir.resolve() / dataset_name)
+            if batch_mode and args.cache_dir
+            else output_dir / "preprocess_cache"
+        )
+        print(f"\n===== 构建记忆：{dataset_name} =====")
+        try:
+            results[dataset_name] = _run_memory_build(
+                args,
+                dataset_name=dataset_name,
+                conversation_directory=conversation_directory,
+                output_dir=output_dir,
+                state_file=state_file,
+                progress_file=progress_file,
+                cache_dir=cache_dir,
+                encoder=encoder,
+                llm=llm,
+                config=config,
+            )
+        except Exception as exc:
+            results[dataset_name] = {"error": str(exc)}
+            print(f"{dataset_name} 失败：{exc}")
+            if args.fail_fast:
+                raise
+
+    print(json.dumps(results, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

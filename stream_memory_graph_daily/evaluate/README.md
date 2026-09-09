@@ -36,6 +36,20 @@ python stream_memory_graph_daily/evaluate/conversation_to_memory.py `
 stream_memory_graph_daily/evaluate/data/conversations/session_*.json
 ```
 
+如果 `--conversation-directory` 指向一个包含多个 persona 子目录的目录，
+脚本会自动逐个处理子目录，并把每个 persona 的状态隔离保存。例如：
+
+```powershell
+python stream_memory_graph_daily/evaluate/conversation_to_memory.py `
+  --conversation-directory F:\StreamEM\Memora\data\weekly `
+  --output-dir stream_memory_graph_daily/evaluate/artifacts/weekly_memory `
+  --use-cache `
+  --no-proxy
+```
+
+输出会变成 `artifacts/weekly/<persona>/memory_state.json`，不会把不同
+persona 的对话合并到同一张记忆图中。
+
 默认写入：
 
 ```text
@@ -82,6 +96,19 @@ python stream_memory_graph_daily/evaluate/memory_to_answer.py --no-proxy
 
 - `data/evaluation_questions_academic_researcher.json`
 - `artifacts/memory_build/memory_state.json`
+
+`questions_file` 也可以直接传入包含多个 persona 的目录。脚本会按文件名
+`evaluation_questions_<persona>.json` 自动匹配对应的
+`<state-root>/<persona>/memory_state.json`，并将结果写入
+`<output-dir>/<persona>/`：
+
+```powershell
+python stream_memory_graph_daily/evaluate/memory_to_answer.py `
+  F:\StreamEM\Memora\data\weekly `
+  --state-file stream_memory_graph_daily/evaluate/artifacts/weekly_memory `
+  --output-dir stream_memory_graph_daily/evaluate/artifacts/weekly_evaluation `
+  --no-proxy
+```
 
 默认生成：
 

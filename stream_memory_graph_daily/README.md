@@ -38,6 +38,8 @@ python -m stream_memory_graph_daily `
   --encoder-model all-MiniLM-L6-v2
 ```
 
+需要提高 checkpoint 阶段的 LLM 吞吐量时，可设置 `--postprocess-workers N`。社区检测仍然串行；社区纯化以及后续 memory extraction/fusion 会并发请求，图和状态写入按稳定顺序提交。该参数默认是 `1`。
+
 生成的状态文件是一个自包含的 JSON 快照，可以通过 `--state-in` 恢复并继续处理。
 
 如果使用 `--input-type segments` 传入预切割 JSONL，每行必须包含：
