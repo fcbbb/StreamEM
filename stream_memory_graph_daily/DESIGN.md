@@ -6,7 +6,7 @@ segment 必须按照 `event_date` 非递减顺序流式写入。当较晚日期�
 
 完整对话进入管线时，切割模型先产生一个窗口内的全部连续 segment，随后锚点模型通过一次批量请求为这些 segment 分别生成 anchor。输出必须与输入 `segment_id` 一一对应且保持顺序；任一 ID 缺失、重复或虚构都会使该窗口整体重试，避免部分写入。
 
-第一次 checkpoint 会处理首批活动节点。后续 checkpoint 只检查当天新增批次能够触达的图连通区域，因此不会重新处理完全无关的 committed memory。如果新增节点连接到了之前的 boundary，该 boundary 会随受影响区域一起重新计算。
+第一次 checkpoint 会处理首批活动节点。后续 checkpoint 只检查当天新增批次能够触达的图连通区域，因此不会重新处理完全无关的 committed memory。
 
 ## 活动图
 
@@ -38,34 +38,15 @@ support_strength
 
 社区成功压缩后，原始证据仍保存在 `SegmentRecord` 以及 memory 的来源字段中，但不再作为活动图节点参与下一轮社区检测。
 
-## 固定 memory 的约束修复
+## 多 memory 社区的分配
 
-在调用任何记忆 LLM 之前，系统都会检查包含多个 memory 的连通分量。每个 memory 被视为身份和标签均不可移动的固定种子。
+在调用记忆 LLM 之前，系统会检查包含多个 memory 的连通分量。对其中每个新 segment，直接计算它与该社区内每个 memory 的相似度，并分配给相似度最高的 memory；不使用跨 segment 的路径支持、最低支持度或 margin boundary 判断。相似度相同时按 memory ID 稳定打破平局。
 
-对于每一个固定 memory 种子，系统计算该种子到每个 segment 的“最大衰减边权乘积路径”。路径可以经过其他 segment，但不能穿过另一个 memory：
-
-```text
-support(segment, memory)
-  = 从 memory 到 segment 的最大衰减边权乘积
-```
-
-这种计算不仅考虑 segment 与 memory 的直接相似度，也会利用同一主题其他 segment 提供的结构支持。
-
-每个 segment 按以下规则处理：
-
-1. 没有任何种子的支持度达到 `assignment_min_support`：作为无 memory 的新主题候选保留；
-2. 得分最高的两个种子都达到阈值，且分差小于 `assignment_margin`：标记为 `boundary`；
-3. 其他情况：归入支持度唯一领先的 memory。
-
-无种子归属的 segment 会在移除 memory 后再次执行社区检测，从而形成一个或多个新主题候选社区。
-
-boundary segment 会继续留在活动图中，但不会进入任何 memory 的融合，也不会立即创建新 memory。如果后续日期增加了更强的同主题路径支持，它可以在后续 checkpoint 中解除 boundary 并归入明确的 memory。
-
-系统会把歧义连通区域中遇到的 memory 对保存为 cannot-link 审计约束。即使没有直接的 memory-memory 边，也不能通过 segment 桥接把两个 memory 合并。
+分配完成后，每个实际收到 segment 的 memory 形成一个独立的 purification 输入组。没有收到新 segment 的 memory 不进入本轮 purification、fusion 或 extraction，保持不变。这样传给 `CommunityPurifier` 的每个组最多包含一个已有 memory。
 
 ## 社区纯化
 
-固定 memory 拆分和 boundary 标记完成后，尚未归档的每个 planned community 会进入 `CommunityPurifier`。纯化输入同时包含 community 中的已有 memory 节点和新 segment 节点；memory 提供 topic、summary、结构化内容和历史 anchor，segment 提供 anchor 与原文。模型需要判断 memory 与新 segment 是否有自然且有信息量的共同父主题，而不是因为存在图边就强制融合。
+分配完成后，尚未归档的每个 planned community 会进入 `CommunityPurifier`。纯化输入同时包含该组中的已有 memory 节点和新 segment 节点；memory 提供 topic、summary、结构化内容和历史 anchor，segment 提供 anchor 与原文。模型需要判断 memory 与新 segment 是否有自然且有信息量的共同父主题，而不是因为存在图边就强制融合。
 
 只有完全不包含已有 memory、且只有一个新 segment 的新主题 singleton 才跳过 LLM。只要 community 包含已有 memory，即使只有一个新 segment，也必须执行纯化判断。
 
@@ -107,9 +88,9 @@ boundary segment 会继续留在活动图中，但不会进入任何 memory 的�
 - 保存能够直接作为下一轮输入的完整 memory 状态；
 - 使用融合后的 `topic` 更新活动图中的 memory 表示。
 
-### 包含多个 memory 的社区
+### 包含多个 memory 的原始社区
 
-这是记忆 LLM 的输入不变量违规。此类社区必须先经过固定种子拆分或 boundary 隔离，绝不会直接传给记忆提取或融合 Prompt。
+原始社区可以包含多个 memory，但在进入记忆 LLM 前会按 segment 的最高 memory 相似度拆成多个 purification 组。因此记忆 extraction/fusion Prompt 不会收到包含多个已有 memory 的输入。
 
 ## 状态与恢复
 

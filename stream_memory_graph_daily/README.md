@@ -4,7 +4,7 @@
 
 社区检测使用 Leiden；运行前请安装图依赖：`uv sync --extra graph`。
 
-第一次 checkpoint 之后，社区检测仅处理当天新增批次能够触达的图连通区域，其中包括被新节点连接到的 boundary 节点。未受影响的已有记忆不会被重复处理。
+第一次 checkpoint 之后，社区检测仅处理当天新增批次能够触达的图连通区域。未受影响的已有记忆不会被重复处理。
 
 memory 在活动图中是简化超节点：以 `memory.topic` 为主表示，同时保留已压缩成员的历史 anchor。完成记忆提取/融合的 segment 会从活动图中移除；纯化拆分产生的 singleton segment 则继续保留在 active graph，等待后续社区证据。已压缩 segment 的 anchor 仍参与超节点与新 segment 的聚合相似度计算，完整原文和来源关系也继续保存在审计状态中。
 
@@ -14,8 +14,7 @@ memory 在活动图中是简化超节点：以 `memory.topic` 为主表示，同
 - `segment → memory` 边的 base 只取 `memory.topic` 与 segment anchor 的相似度；历史成员 anchor 只能通过达到阈值的成员覆盖率和平均支持强度增加共识分，不能替换 topic 作为 base。
 - 禁止建立 `memory → memory` 边。
 - 一个经过处理的社区最多只能包含一个 committed memory。
-- 如果检测结果包含多个 memory，系统会根据固定种子的图支持度进行拆分。
-- 无法明确归属的 segment 会被标记为 `boundary`，在后续 checkpoint 解决歧义之前不会进入记忆融合。
+- 如果检测结果包含多个 memory，系统会将每个 segment 直接分配给相似度最高的 memory，再按收到 segment 的 memory 分组进行纯化；没有收到 segment 的 memory 不处理。
 - 社区纯化同时查看已有 memory 与新 segment。已有 memory + 单个新 segment 也必须经过兼容性判断；如果不兼容，segment 会进入无 memory 的新主题 group，而不会被强制融合。
 - 纯化拆分产生的单 segment group 只保留在 active graph，跳过 extraction/fusion，等待后续 segment；不会归档为 `no_memory`。拆分组之间的旧 memory-segment/segment-segment 边会被立即切断，避免下一轮重新连回。
 - memory 节点关系由一个默认关闭的预留存储接口表示；当前版本不会让这些关系参与活动图或社区检测。

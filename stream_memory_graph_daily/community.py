@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import heapq
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -38,7 +37,7 @@ class CommunityPlan:
 
 
 class ConstrainedCommunityPlanner:
-    """Detect communities, then enforce fixed memory seeds and cannot-link."""
+    """Detect communities and assign multi-memory segments before purification."""
 
     def __init__(self, config: DailyGraphConfig) -> None:
         self.config = config
@@ -78,39 +77,6 @@ class ConstrainedCommunityPlanner:
         )
         return [{node_ids[index] for index in group} for group in partition]
 
-    def _seed_support(
-        self,
-        active: ActiveGraph,
-        nodes: set[str],
-        memory_id: str,
-        all_memories: set[str],
-    ) -> dict[str, float]:
-        """Maximum decayed edge-product path from one fixed memory seed."""
-
-        support = {memory_id: 1.0}
-        hops = {memory_id: 0}
-        pending: list[tuple[float, int, str]] = [(-1.0, 0, memory_id)]
-        while pending:
-            negative_score, hop, node_id = heapq.heappop(pending)
-            score = -negative_score
-            if score + 1e-12 < support.get(node_id, 0.0):
-                continue
-            if hop >= self.config.max_assignment_hops:
-                continue
-            for neighbour in active.graph.neighbors(node_id):
-                if neighbour not in nodes:
-                    continue
-                if neighbour in all_memories and neighbour != memory_id:
-                    continue
-                weight = float(active.graph[node_id][neighbour].get("weight", 0.0))
-                candidate = score * weight * self.config.path_decay
-                next_hop = hop + 1
-                if candidate > support.get(neighbour, 0.0) + 1e-12:
-                    support[neighbour] = candidate
-                    hops[neighbour] = next_hop
-                    heapq.heappush(pending, (-candidate, next_hop, neighbour))
-        return support
-
     def _new_groups(
         self, active: ActiveGraph, segment_ids: set[str], source: str
     ) -> list[PlannedCommunity]:
@@ -125,45 +91,41 @@ class ConstrainedCommunityPlanner:
         nodes: set[str],
         pre_boundary: set[str],
     ) -> tuple[list[PlannedCommunity], dict[str, dict[str, float]]]:
+        """Assign every segment to its most similar memory.
+
+        The method name is retained for compatibility with callers and saved
+        workflow code.  Multi-memory communities no longer use path support,
+        minimum-support gates, or boundary margins.  Each memory that receives
+        at least one segment becomes its own purification input; memories with
+        no assigned segment are omitted.
+        """
+
         memory_ids = nodes & active.memory_ids()
         segment_ids = (nodes & active.segment_ids()) - pre_boundary
-        supports_by_memory = {
-            memory_id: self._seed_support(active, nodes - pre_boundary, memory_id, memory_ids)
-            for memory_id in memory_ids
-        }
         assigned = {memory_id: set() for memory_id in memory_ids}
-        unseeded: set[str] = set()
-        boundaries: dict[str, dict[str, float]] = {}
+
+        if not memory_ids:
+            return self._new_groups(active, segment_ids, "unseeded_new_topic"), {}
+
         for segment_id in sorted(segment_ids):
             scores = {
-                memory_id: supports_by_memory[memory_id].get(segment_id, 0.0)
+                memory_id: active.similarity(memory_id, segment_id)
                 for memory_id in memory_ids
             }
             ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
-            best_memory, best_score = ranked[0]
-            second_score = ranked[1][1] if len(ranked) > 1 else 0.0
-            if best_score < self.config.assignment_min_support:
-                unseeded.add(segment_id)
-            elif (
-                second_score >= self.config.assignment_min_support
-                and best_score - second_score < self.config.assignment_margin
-            ):
-                boundaries[segment_id] = dict(ranked)
-            else:
-                assigned[best_memory].add(segment_id)
+            assigned[ranked[0][0]].add(segment_id)
 
         groups = [
             PlannedCommunity(
                 stable_group_id({memory_id, *segments}),
                 {memory_id},
                 segments,
-                "fixed_seed_split",
+                "most_similar_memory",
             )
             for memory_id, segments in sorted(assigned.items())
             if segments
         ]
-        groups.extend(self._new_groups(active, unseeded, "unseeded_new_topic"))
-        return groups, boundaries
+        return groups, {}
 
     def plan(
         self, active: ActiveGraph, focus_node_ids: set[str] | None = None
@@ -174,12 +136,11 @@ class ConstrainedCommunityPlanner:
         memory_nodes = active.memory_ids()
         segment_nodes = active.segment_ids()
 
-        # Enforce the fixed-seed rule over connected components, not only over
-        # raw Leiden output. Leiden is free to place a bridge with one seed
-        # even when that bridge is almost equally close to another seed. A
-        # connected component exposes every possible memory bridge to the
-        # constrained repair pass. Path products let later supporting evidence
-        # resolve a segment that was previously boundary.
+        # Handle multi-memory connected components before purification. A
+        # connected component exposes every segment that could be associated
+        # with more than one memory; repair_multi_memory assigns each one to
+        # the most similar memory and returns one purification group per
+        # memory that received a segment.
         all_components = [set(group) for group in nx.connected_components(active.graph)]
         if focus_node_ids is None:
             components = all_components
@@ -191,10 +152,6 @@ class ConstrainedCommunityPlanner:
         for component in components:
             memories = component & memory_nodes
             if len(memories) > 1:
-                for left in sorted(memories):
-                    for right in sorted(memories):
-                        if left < right:
-                            cannot_link.add((left, right))
                 repaired, new_boundaries = self.repair_multi_memory(
                     active, component, set()
                 )
@@ -215,18 +172,6 @@ class ConstrainedCommunityPlanner:
                             "detected",
                         )
                     )
-
-        # An ambiguous node may expose a memory pair even when Leiden placed
-        # those memories in separate communities. Persist that cannot-link too.
-        for scores in boundaries.values():
-            candidates = [
-                memory_id
-                for memory_id, score in scores.items()
-                if score >= self.config.assignment_min_support
-            ]
-            for index, left in enumerate(sorted(candidates)):
-                for right in sorted(candidates)[index + 1 :]:
-                    cannot_link.add((left, right))
 
         planned.sort(key=lambda group: group.community_id)
         return CommunityPlan(

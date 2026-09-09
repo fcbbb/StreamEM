@@ -364,7 +364,7 @@ class DailyPipelineTests(unittest.TestCase):
             for row in pipeline.stage_audit
         ))
 
-    def test_ambiguous_segment_becomes_boundary_without_fusion(self) -> None:
+    def test_bridge_segment_is_assigned_to_most_similar_memory(self) -> None:
         llm = MemoryFakeLLM()
         pipeline = DailyMemoryGraph(
             llm=llm, encoder=VectorEncoder(self.vectors), config=self.config
@@ -380,28 +380,30 @@ class DailyPipelineTests(unittest.TestCase):
 
         result = pipeline.finalize()
 
-        self.assertEqual(result["boundary_segment_ids"], ["bridge"])
-        self.assertEqual(pipeline.segments["bridge"].status, "boundary")
-        self.assertIn("bridge", pipeline.active_graph.nodes)
-        self.assertIn(("m-a", "m-b"), pipeline.cannot_link_memory_pairs)
+        self.assertEqual(result["boundary_segment_ids"], [])
+        self.assertEqual(pipeline.segments["bridge"].status, "compressed")
+        self.assertNotIn("bridge", pipeline.active_graph.nodes)
+        self.assertEqual(pipeline.cannot_link_memory_pairs, set())
+        self.assertEqual(pipeline.memories["m-b"].topic, "topic b")
         self.assertEqual(llm.extractions, 0)
-        self.assertEqual(llm.fusions, 0)
+        self.assertEqual(llm.fusions, 1)
 
-    def test_fixed_seed_path_support_splits_a_multi_memory_component(self) -> None:
+    def test_multi_memory_component_assigns_each_segment_by_direct_similarity(self) -> None:
+        encoder = VectorEncoder({
+            "topic a": [1.0, 0.0],
+            "topic b": [0.0, 1.0],
+            "segment a": [0.99, 0.10],
+            "segment b": [0.10, 0.99],
+        })
         pipeline = DailyMemoryGraph(
-            llm=MemoryFakeLLM(), encoder=VectorEncoder(self.vectors), config=self.config
+            llm=MemoryFakeLLM(), encoder=encoder, config=self.config
         )
         pipeline.active_graph.add_memory("m-a", "topic a")
         pipeline.active_graph.add_memory("m-b", "topic b")
-        pipeline.active_graph.add_segment("s-a", "coffee purchase")
-        pipeline.active_graph.add_segment("s-b", "coffee price")
+        pipeline.active_graph.add_segment("s-a", "segment a")
+        pipeline.active_graph.add_segment("s-b", "segment b")
         graph = pipeline.active_graph.graph
-        # Isolate the hand-built path below from the automatic incremental
-        # edges created while the nodes were added.
         graph.remove_edges_from(list(graph.edges()))
-        graph.add_edge("m-a", "s-a", weight=0.95)
-        graph.add_edge("s-a", "s-b", weight=0.55)
-        graph.add_edge("s-b", "m-b", weight=0.95)
 
         groups, boundaries = pipeline.planner.repair_multi_memory(
             pipeline.active_graph, {"m-a", "m-b", "s-a", "s-b"}, set()
@@ -415,28 +417,38 @@ class DailyPipelineTests(unittest.TestCase):
         self.assertEqual(assignments, {"m-a": {"s-a"}, "m-b": {"s-b"}})
         self.assertEqual(boundaries, {})
 
-    def test_later_structural_support_can_resolve_a_boundary(self) -> None:
+    def test_multi_memory_assignment_ignores_bridge_path_support(self) -> None:
         pipeline = DailyMemoryGraph(
-            llm=MemoryFakeLLM(), encoder=VectorEncoder(self.vectors), config=self.config
+            llm=MemoryFakeLLM(), encoder=VectorEncoder({
+                "topic a": [1.0, 0.0],
+                "topic b": [0.0, 1.0],
+                "bridge": [0.8, 0.6],
+                "support b": [0.0, 1.0],
+            }), config=self.config
         )
         pipeline.active_graph.add_memory("m-a", "topic a")
         pipeline.active_graph.add_memory("m-b", "topic b")
-        pipeline.active_graph.add_segment("bridge", "ambiguous bridge")
-        pipeline.active_graph.add_segment("support-a", "a supporting context")
+        pipeline.active_graph.add_segment("bridge", "bridge")
+        pipeline.active_graph.add_segment("support-b", "support b")
         graph = pipeline.active_graph.graph
-        graph.add_edge("m-a", "bridge", weight=0.71)
-        graph.add_edge("m-b", "bridge", weight=0.70)
-        graph.add_edge("m-a", "support-a", weight=0.95)
-        graph.add_edge("support-a", "bridge", weight=0.95)
+        graph.remove_edges_from(list(graph.edges()))
+        # The path through support-b strongly favors m-b, but direct topic
+        # similarity still assigns bridge to m-a.
+        graph.add_edge("m-b", "support-b", weight=0.99)
+        graph.add_edge("support-b", "bridge", weight=0.99)
 
         groups, boundaries = pipeline.planner.repair_multi_memory(
             pipeline.active_graph,
-            {"m-a", "m-b", "bridge", "support-a"},
+            {"m-a", "m-b", "bridge", "support-b"},
             set(),
         )
 
-        assigned_to_a = next(group for group in groups if group.memory_ids == {"m-a"})
-        self.assertEqual(assigned_to_a.segment_ids, {"bridge", "support-a"})
+        assignments = {
+            next(iter(group.memory_ids)): group.segment_ids
+            for group in groups
+            if group.memory_ids
+        }
+        self.assertEqual(assignments, {"m-a": {"bridge"}, "m-b": {"support-b"}})
         self.assertEqual(boundaries, {})
 
     def test_state_round_trip_rebuilds_topic_graph(self) -> None:
