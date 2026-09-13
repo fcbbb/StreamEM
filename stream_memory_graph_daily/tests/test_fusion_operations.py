@@ -13,6 +13,7 @@ class OperationLLM:
         self.response = response
 
     def complete(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        self.system_prompt = system_prompt
         self.payload = json.loads(user_prompt.split("INPUT DATA\n", 1)[1])
         return self.response
 
@@ -251,6 +252,10 @@ class FusionOperationTests(unittest.TestCase):
         self.assertEqual(updated.source_segments, ["old-segment", "new-segment"])
         self.assertIn("provisional_l1", llm.payload["new_group"])
         self.assertNotIn("segments", llm.payload["new_group"])
+        self.assertEqual(llm.payload["target_level"], 2)
+        self.assertEqual(llm.payload["level_policy"]["level"], 2)
+        self.assertIn("Target level: 2", llm.system_prompt)
+        self.assertIn("stable_topic_memory", llm.system_prompt)
 
     def test_legacy_memory_state_gets_compatible_metadata_defaults(self) -> None:
         payload = self.existing.to_dict()

@@ -185,16 +185,24 @@ L0-C       → L2-Y
 
 ### 层级粗细与建图参数
 
-越高层可以允许更宽的主题连接，但不能只降低相似度阈值。每层至少独立配置：
+第一版不预设每个层级使用不同的语义阈值。全局阈值表达统一的最低相似性标准，
+层级差异来自被比较的表示粒度和边的语义：
 
-- current-current edge threshold；
-- current-upper-memory edge threshold；
-- Leiden resolution；
-- kNN 或候选边上限。
+```text
+G0：局部事件是否同主题
+G1：L1 是否具有共同的稳定主题
+G2：L2 是否具有共同的长期抽象主题
+```
 
-高层通常使用更宽松的边阈值和更低的 Leiden resolution，以允许更粗主题，但必须配合 purification，防止低阈值造成链式误连和巨大社区。
+因此，第一版先在各层复用同一个全局语义阈值，同时按层统计：
 
-阈值应按层级相似度分布校准，而不是直接复用 L0 的绝对阈值。
+- edge density；
+- average degree；
+- community size；
+- 跨主题误连率和候选召回率。
+
+只有评测证明不同层的相似度分布或误连率明显不同，才引入分层阈值校准。`resolution`、
+`kNN` 和候选边策略也先保持统一或按边语义设计，不把“高层更抽象”直接等同于降低阈值。
 
 ### 来源和表示
 
@@ -236,7 +244,7 @@ L3 的直接成员表示：L2 memory representation
 - [ ] 实现 `OWNER / NEW_TOPIC / AMBIGUOUS / REJECTED` 路由结果及层级校准、margin 和冲突检查。
 - [x] 将 checkpoint 改为：L0 局部社区 → provisional L1 → owner routing → 快速融合或普通 L1 流程；本阶段暂不实现 L1→L2、L2→L3 正常晋升。
 - [ ] 快速路径失败时回退到普通 L1 路径，保证原始 segment 不丢失。
-- [ ] 在 purification 中增加 owner 冲突输入，禁止明显属于不同 owner 的 L0 被写入同一个 L1。
-- [ ] 为每个层级增加独立的建图阈值、resolution 和候选边策略。
-- [ ] 更新 extraction/fusion prompt，使其接收 `target_level` 和该层允许保留/丢弃的信息类型。
+- [x] 暂不在 purification 中增加 owner 冲突输入；当前社区纯化规则足够，后续根据评测再决定。
+- [ ] 先使用全局统一语义阈值，并增加按层 edge density、degree、社区规模和误连率评测；仅在必要时再引入分层阈值校准。
+- [x] 保留现有 extraction/fusion 任务 Prompt，新增公共层级策略 Prompt；由 `target_level` 注入该层的职责、必须保留、可压缩、可丢弃和禁止推断信息类型，并在调用 payload 中保留同一份结构化策略。当前原始 segment extraction 固定生成 L1，L2+ 通过同层 owner fusion 使用对应策略。
 - [ ] 增加以下测试：高层主题回归、L1/L2 重复 owner 消除、不同 owner 的 L0 拆分、快速路径失败回退、L1→L2 全局替换、无 owner 的新主题逐层晋升。

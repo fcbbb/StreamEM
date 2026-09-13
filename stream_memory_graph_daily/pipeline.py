@@ -507,7 +507,10 @@ class DailyMemoryGraph:
                 memory_id = next(iter(group.memory_ids))
                 existing = self.memories[memory_id]
                 updated, decision = service.fuse(
-                    group.community_id, existing, segments
+                    group.community_id,
+                    existing,
+                    segments,
+                    target_level=existing.level,
                 )
                 return {
                     "kind": "fused",
@@ -518,7 +521,9 @@ class DailyMemoryGraph:
 
             return {
                 "kind": "extracted",
-                "memory": service.extract(group.community_id, segments),
+                "memory": service.extract(
+                    group.community_id, segments, target_level=1
+                ),
             }, audit_events
         except Exception as exc:
             return {"kind": "error", "error": exc}, audit_events
@@ -539,7 +544,9 @@ class DailyMemoryGraph:
         try:
             return {
                 "kind": "provisional",
-                "memory": service.extract(group.community_id, segments),
+                "memory": service.extract(
+                    group.community_id, segments, target_level=1
+                ),
             }, audit_events
         except Exception as exc:
             return {"kind": "error", "error": exc}, audit_events
@@ -557,7 +564,10 @@ class DailyMemoryGraph:
         service = MemoryService(self.llm, audit_sink=collect_audit)
         try:
             updated, decision = service.fuse_provisional(
-                f"owner:{owner_id}:{provisional.memory_id}", owner, provisional
+                f"owner:{owner_id}:{provisional.memory_id}",
+                owner,
+                provisional,
+                target_level=owner.level,
             )
             return {
                 "kind": "fused_owner",

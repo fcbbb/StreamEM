@@ -5,12 +5,14 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from .level_policy import get_level_policy
 from .llm import JsonLLM, LLMUnavailable
 from .models import MemoryRecord, SegmentRecord
 from .prompts import (
     MEMORY_EXTRACTION_PROMPT,
     MEMORY_FUSION_PROMPT,
     MEMORY_FUSION_FROM_L1_PROMPT,
+    render_memory_level_policy,
 )
 
 
@@ -152,14 +154,34 @@ class MemoryService:
             )
         return value
 
+    @staticmethod
+    def _level_system_prompt(system: str, target_level: int) -> str:
+        """Keep the established task prompt and append the shared level policy."""
+
+        return system.rstrip() + "\n\n" + render_memory_level_policy(target_level)
+
     def extract(
-        self, community_id: str, segments: list[SegmentRecord]
+        self,
+        community_id: str,
+        segments: list[SegmentRecord],
+        *,
+        target_level: int = 1,
     ) -> MemoryRecord | None:
+        # This extraction entry point consumes raw L0 segments and therefore
+        # currently creates L1. Higher-level memories are produced by fusing
+        # lower-level memory representations in the owner path.
+        if target_level != 1:
+            raise ValueError(
+                "segment extraction currently supports target_level=1 only"
+            )
+        policy = get_level_policy(target_level)
         value = self._complete(
             "memory_extraction",
-            MEMORY_EXTRACTION_PROMPT,
+            self._level_system_prompt(MEMORY_EXTRACTION_PROMPT, target_level),
             {
                 "community_id": community_id,
+                "target_level": target_level,
+                "level_policy": policy.to_dict(),
                 "segments": [segment_prompt_row(segment) for segment in segments],
             },
         )
@@ -202,11 +224,19 @@ class MemoryService:
         segments: list[SegmentRecord],
         *,
         provisional: MemoryRecord | None = None,
+        target_level: int | None = None,
     ) -> tuple[MemoryRecord, dict[str, Any]]:
         if provisional is not None and segments:
             raise ValueError("fusion cannot receive both segments and provisional memory")
         if provisional is None and not segments:
             raise ValueError("fusion needs segments or a provisional memory")
+        if target_level is None:
+            target_level = existing.level
+        policy = get_level_policy(target_level)
+        if target_level != existing.level:
+            raise ValueError(
+                "fusion target_level must match the existing memory level"
+            )
         new_source_ids = (
             set(provisional.source_segments)
             if provisional is not None
@@ -219,9 +249,16 @@ class MemoryService:
         )
         value = self._complete(
             "memory_fusion_from_l1" if provisional is not None else "memory_fusion",
-            MEMORY_FUSION_FROM_L1_PROMPT if provisional is not None else MEMORY_FUSION_PROMPT,
+            self._level_system_prompt(
+                MEMORY_FUSION_FROM_L1_PROMPT
+                if provisional is not None
+                else MEMORY_FUSION_PROMPT,
+                target_level,
+            ),
             {
                 "existing_memory": existing.prompt_dict(),
+                "target_level": target_level,
+                "level_policy": policy.to_dict(),
                 "new_group": (
                     {
                         "community_id": community_id,
@@ -409,6 +446,8 @@ class MemoryService:
         community_id: str,
         existing: MemoryRecord,
         provisional: MemoryRecord,
+        *,
+        target_level: int | None = None,
     ) -> tuple[MemoryRecord, dict[str, Any]]:
         """Fuse only the semantic contents of a provisional L1 memory."""
 
@@ -417,4 +456,5 @@ class MemoryService:
             existing,
             [],
             provisional=provisional,
+            target_level=target_level,
         )

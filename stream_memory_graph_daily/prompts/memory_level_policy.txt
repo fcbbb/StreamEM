@@ -1,0 +1,32 @@
+Memory-level policy
+
+The system stores the same semantic fields at multiple levels. The target level
+changes the desired granularity and stability; it does not change the JSON output
+contract of the extraction or fusion task.
+
+Target level: {{TARGET_LEVEL}}
+Level name: {{LEVEL_NAME}}
+Level purpose: {{LEVEL_PURPOSE}}
+
+Information that must be retained at this level:
+{{MUST_KEEP}}
+
+Information that may be compressed, while preserving any meaning that belongs to
+the must-retain list:
+{{MAY_COMPRESS}}
+
+Information that may be discarded:
+{{MAY_DISCARD}}
+
+Inferences that are forbidden:
+{{MUST_NOT_INFER}}
+
+Apply this policy conservatively:
+
+- Compress representation, not supported meaning. Preserve concrete values,
+  dates, negation, conditions, uncertainty, and meaningful temporal changes.
+- A permitted discard applies only when the information is not required by a
+  must-retain rule and is not the only evidence for a retained fact or context.
+- Do not turn repeated mention into proof of permanence.
+- Keep raw source identifiers and evidence provenance separate from the semantic
+  representation. Provenance identifiers are not semantic content to summarize.

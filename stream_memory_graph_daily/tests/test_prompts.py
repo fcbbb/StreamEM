@@ -9,8 +9,10 @@ from stream_memory_graph_daily.prompts import (
     MEMORY_EXTRACTION_PROMPT,
     MEMORY_FUSION_PROMPT,
     MEMORY_FUSION_FROM_L1_PROMPT,
+    MEMORY_LEVEL_POLICY_PROMPT,
     SHARED_SEMANTICS,
     TOPIC_OWNER_ROUTING_PROMPT,
+    render_memory_level_policy,
 )
 
 
@@ -28,6 +30,16 @@ class PromptCompositionTests(unittest.TestCase):
         for prompt in prompts:
             self.assertNotIn("{{SHARED_SEMANTICS}}", prompt)
             self.assertEqual(prompt.count(SHARED_SEMANTICS), 1)
+
+    def test_level_policy_is_a_reusable_prompt_without_unresolved_markers(self) -> None:
+        rendered = render_memory_level_policy(2)
+
+        self.assertIn("Target level: 2", rendered)
+        self.assertIn("stable_topic_memory", rendered)
+        self.assertIn("durable explicit user information", rendered)
+        self.assertNotIn("{{", rendered)
+        self.assertNotIn("}}", rendered)
+        self.assertNotIn(SHARED_SEMANTICS, MEMORY_LEVEL_POLICY_PROMPT)
 
     def test_stage_identifiers_and_output_contracts_remain_available(self) -> None:
         self.assertTrue(CUTTING_PROMPT.startswith("You are segmenting a conversation"))
