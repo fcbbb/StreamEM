@@ -53,6 +53,17 @@ class MemoryExtractionTests(unittest.TestCase):
         self.assertIsNotNone(memory)
         assert memory is not None
         self.assertEqual(len(memory.user_memories), 1)
+        self.assertEqual(memory.level, 1)
+        self.assertEqual(
+            memory.direct_members,
+            [{
+                "node_id": "new-segment",
+                "level": 0,
+                "kind": "segment",
+                "representation": "general concept",
+            }],
+        )
+        self.assertTrue(memory.last_mentioned_at)
 
 
 class FusionOperationTests(unittest.TestCase):
@@ -111,6 +122,10 @@ class FusionOperationTests(unittest.TestCase):
         self.assertTrue(updated.user_memories[0]["item_id"].startswith("item:"))
         self.assertNotEqual(updated.user_memories[0]["item_id"], "new-segment")
         self.assertEqual(updated.source_segments, ["old-segment", "new-segment"])
+        self.assertEqual(
+            [member["node_id"] for member in updated.direct_members],
+            ["new-segment"],
+        )
         self.assertEqual(result["operations"][1]["source_segment_ids"], ["new-segment"])
         self.assertEqual(result["topic_source_segment_ids"], [])
         self.assertEqual(result["summary_source_segment_ids"], ["new-segment"])
@@ -176,6 +191,20 @@ class FusionOperationTests(unittest.TestCase):
                 self.assertEqual(result["decision"], "no_material_change")
                 self.assertEqual(result["no_op_reason"], reason)
                 self.assertEqual(updated.version, self.existing.version)
+                self.assertEqual(updated.updated_at, self.existing.updated_at)
+                self.assertTrue(updated.last_mentioned_at)
+
+    def test_legacy_memory_state_gets_compatible_metadata_defaults(self) -> None:
+        payload = self.existing.to_dict()
+        payload.pop("level")
+        payload.pop("direct_members")
+        payload.pop("last_mentioned_at")
+
+        restored = MemoryRecord.from_dict(payload)
+
+        self.assertEqual(restored.level, 1)
+        self.assertEqual(restored.direct_members, [])
+        self.assertEqual(restored.last_mentioned_at, restored.updated_at)
 
 
 if __name__ == "__main__":

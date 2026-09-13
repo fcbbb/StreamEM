@@ -49,6 +49,30 @@ def segment_prompt_row(segment: SegmentRecord) -> dict[str, Any]:
     }
 
 
+def direct_segment_member(segment: SegmentRecord) -> dict[str, Any]:
+    return {
+        "node_id": segment.segment_id,
+        "level": 0,
+        "kind": "segment",
+        "representation": segment.anchor,
+    }
+
+
+def merge_direct_segment_members(
+    existing: MemoryRecord, segments: list[SegmentRecord]
+) -> list[dict[str, Any]]:
+    """Keep one-hop member snapshots without expanding raw provenance."""
+
+    output = [dict(member) for member in existing.direct_members]
+    seen = {str(member["node_id"]) for member in output}
+    for segment in segments:
+        member = direct_segment_member(segment)
+        if member["node_id"] not in seen:
+            output.append(member)
+            seen.add(member["node_id"])
+    return output
+
+
 def _initial_items(
     memory_id: str, field_name: str, values: list[dict[str, str]]
 ) -> list[dict[str, str]]:
@@ -140,6 +164,9 @@ class MemoryService:
             source_segments=[segment.segment_id for segment in segments],
             created_at=now,
             updated_at=now,
+            level=1,
+            direct_members=[direct_segment_member(segment) for segment in segments],
+            last_mentioned_at=now,
         )
 
     def fuse(
@@ -284,6 +311,7 @@ class MemoryService:
             normalized_operations.append(normalized_operation)
 
         semantic_change = bool(normalized_operations) or topic != existing.topic or summary != existing.summary
+        now = utc_now()
         updated = MemoryRecord(
             memory_id=existing.memory_id,
             topic=topic,
@@ -297,8 +325,11 @@ class MemoryService:
                 dict.fromkeys([*existing.source_segments, *(segment.segment_id for segment in segments)])
             ),
             created_at=existing.created_at,
-            updated_at=utc_now(),
+            updated_at=(now if semantic_change else existing.updated_at),
             version=existing.version + (1 if semantic_change else 0),
+            level=existing.level,
+            direct_members=merge_direct_segment_members(existing, segments),
+            last_mentioned_at=now,
         )
         return updated, {
             "decision": "update_existing" if semantic_change else "no_material_change",

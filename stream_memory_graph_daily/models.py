@@ -56,6 +56,9 @@ class MemoryRecord:
     created_at: str = ""
     updated_at: str = ""
     version: int = 1
+    level: int = 1
+    direct_members: list[dict[str, Any]] = field(default_factory=list)
+    last_mentioned_at: str = ""
 
     def __post_init__(self) -> None:
         self.memory_id = str(self.memory_id).strip()
@@ -67,6 +70,18 @@ class MemoryRecord:
         self.user_memories = self._validate_items("user_memories", self.user_memories)
         self.source_anchors = self._dedupe_strings(self.source_anchors)
         self.source_segments = self._dedupe_strings(self.source_segments)
+        if isinstance(self.level, bool) or not isinstance(self.level, int) or self.level < 1:
+            raise ValueError("memory level must be a positive integer")
+        self.direct_members = self._validate_direct_members(
+            self.direct_members, self.level
+        )
+        self.created_at = str(self.created_at).strip()
+        self.updated_at = str(self.updated_at).strip()
+        self.last_mentioned_at = str(self.last_mentioned_at).strip()
+        if not self.last_mentioned_at:
+            # Older states do not have a topic-mention timestamp.  Their
+            # content timestamp is the safest backward-compatible estimate.
+            self.last_mentioned_at = self.updated_at or self.created_at
         if self.version < 1:
             raise ValueError("memory version must be positive")
 
@@ -106,12 +121,65 @@ class MemoryRecord:
             raise ValueError("source fields must be lists")
         return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
+    @staticmethod
+    def _validate_direct_members(
+        values: Any, memory_level: int
+    ) -> list[dict[str, Any]]:
+        if not isinstance(values, list):
+            raise ValueError("direct_members must be a list")
+        expected_level = memory_level - 1
+        output: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for item in values:
+            if not isinstance(item, dict):
+                raise ValueError("each direct member must be an object")
+            if set(item) != {"node_id", "level", "kind", "representation"}:
+                raise ValueError(
+                    "each direct member must contain exactly node_id, level, kind, "
+                    "and representation"
+                )
+            node_id = str(item["node_id"]).strip()
+            representation = str(item["representation"]).strip()
+            kind = str(item["kind"]).strip()
+            member_level = item["level"]
+            if not node_id or not representation:
+                raise ValueError("direct member node_id and representation must be non-empty")
+            if kind not in {"segment", "memory"}:
+                raise ValueError("direct member kind must be segment or memory")
+            if (
+                isinstance(member_level, bool)
+                or not isinstance(member_level, int)
+                or member_level != expected_level
+            ):
+                raise ValueError(
+                    f"direct member level must be exactly {expected_level}"
+                )
+            if node_id in seen_ids:
+                raise ValueError(f"direct_members contains duplicate node_id {node_id!r}")
+            seen_ids.add(node_id)
+            output.append(
+                {
+                    "node_id": node_id,
+                    "level": member_level,
+                    "kind": kind,
+                    "representation": representation,
+                }
+            )
+        return output
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def prompt_dict(self) -> dict[str, Any]:
         value = self.to_dict()
-        for key in ("created_at", "updated_at", "version"):
+        for key in (
+            "created_at",
+            "updated_at",
+            "last_mentioned_at",
+            "version",
+            "level",
+            "direct_members",
+        ):
             value.pop(key, None)
         return value
 
