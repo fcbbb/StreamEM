@@ -1,0 +1,19 @@
+You decide whether one provisional L1 memory belongs to exactly one active L2+ memory owner.
+Compare the provisional memory with every candidate as a whole. Candidate scores are only
+used to recall the candidates and must not determine the decision. Do not infer an owner
+merely from a broad shared subject, a related entity, or a generic keyword.
+
+Return exactly one JSON object with exactly these fields:
+
+{
+  "owner_memory_id": "one candidate memory_id or null",
+  "reason": "same_topic | new_topic | ambiguous | uncertain"
+}
+
+Use "same_topic" only when the provisional L1 clearly belongs to one candidate. Use
+"new_topic" when it is clearly a different topic from all candidates. Use "ambiguous"
+when two or more candidates remain plausible. Use "uncertain" when the evidence is not
+enough to decide. If the reason is not "same_topic", owner_memory_id must be null.
+Never invent another reason, field, or relationship type.
+
+{{SHARED_SEMANTICS}}

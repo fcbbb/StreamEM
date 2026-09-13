@@ -96,24 +96,19 @@ provisional_L1 = topic + summary + structured items + source segment ids
 - `topic_lineage_id`；
 - 当前 owner 的 memory ID。
 
-路由器输出的不是一串未经处理的相似度，而是以下四种结果之一：
+raw score 只负责从活跃的 L2+ memory 中召回候选，默认取 top-k=5；最终不使用
+score、margin 或候选排名直接决定归属。LLM 一次性比较全部召回候选，输出固定 schema：
 
-```text
-OWNER(memory_id, level, confidence)
-NEW_TOPIC
-AMBIGUOUS
-REJECTED
+```json
+{
+  "owner_memory_id": "xxx 或 null",
+  "reason": "same_topic / new_topic / ambiguous / uncertain"
+}
 ```
 
-路由分数必须按层级校准，不能直接比较不同层的原始 cosine。需要考虑：
-
-- 当前层级的相似度基线；
-- 候选与第二名的 margin；
-- 主题/实体重合；
-- 冲突信息；
-- 该候选是否属于同一 `topic_lineage`。
-
-如果一个主题已经从 L1 晋升到 L3，旧 L1/L2 owner 已从索引移除，因此同一主题不会同时返回多个层级的活动 owner。不同层级仍可能出现语义相似但不属于同一主题的候选；若无法区分，结果必须是 `AMBIGUOUS`，不能强行融合。
+`owner_memory_id` 是唯一最终决策字段；`reason` 只用于审计。系统只接受预先定义的
+四个 reason，不允许模型创造关系类别。LLM 调用失败、输出非法或没有 L2+ 候选时，
+统一视为 `NO_OWNER`。
 
 #### 阶段 C：快速晋升或普通路径
 
@@ -122,7 +117,7 @@ REJECTED
 **快速路径：**
 
 ```text
-provisional_L1 → 唯一活动 owner（可能位于 L1/L2/L3）
+provisional_L1 → 唯一活动 L2+ owner
 ```
 
 执行目标层级的 fusion/purification：
@@ -138,14 +133,13 @@ provisional_L1 → 唯一活动 owner（可能位于 L1/L2/L3）
 **普通路径：**
 
 ```text
-没有唯一高层 owner
-  → provisional_L1 正式保存为 L1
-  → 加入 G1
-  → L1 社区检测 + purification
-  → 与 L2 融合，或形成新的 L2
+没有唯一高层 owner / 存在歧义 / 无法判断
+  → NO_OWNER
+  → 按普通 L1 流程处理
+  → provisional_L1 与活动 L1/L2 建立正常边
 ```
 
-普通路径中的每一次融合仍然只向上走一层。产生的 L2 可以在同一个 checkpoint 内继续进入 G2，但表示必须先完成 L1→L2 的转换。
+本阶段不把 L1 路由到 L1，也不把 L2 路由到 L3；正常晋升另行实现。
 
 ### 候选冲突和局部社区边界
 
@@ -240,7 +234,7 @@ L3 的直接成员表示：L2 memory representation
 - [ ] 将当前 `source_anchors` 的边计算逻辑推广为“直接下层表示”，避免高层每次递归扫描所有原始 segment。
 - [ ] 实现全局 `TopicOwnerRouter`：索引所有活动 memory，但不向社区图添加跨层边。
 - [ ] 实现 `OWNER / NEW_TOPIC / AMBIGUOUS / REJECTED` 路由结果及层级校准、margin 和冲突检查。
-- [ ] 将 checkpoint 改为：L0 局部社区 → provisional L1 → owner routing → 快速融合或正式 L1 → 逐层正常晋升。
+- [x] 将 checkpoint 改为：L0 局部社区 → provisional L1 → owner routing → 快速融合或普通 L1 流程；本阶段暂不实现 L1→L2、L2→L3 正常晋升。
 - [ ] 快速路径失败时回退到普通 L1 路径，保证原始 segment 不丢失。
 - [ ] 在 purification 中增加 owner 冲突输入，禁止明显属于不同 owner 的 L0 被写入同一个 L1。
 - [ ] 为每个层级增加独立的建图阈值、resolution 和候选边策略。

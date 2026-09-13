@@ -124,6 +124,40 @@ class MemoryFakeLLM:
         raise AssertionError(f"unexpected prompt: {system_prompt[:60]}")
 
 
+class OwnerMemoryFakeLLM(MemoryFakeLLM):
+    def complete(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        if system_prompt.startswith("You decide whether one provisional L1"):
+            return {"owner_memory_id": "owner-l2", "reason": "same_topic"}
+        if system_prompt.startswith("You maintain structured memory"):
+            payload = self._payload(user_prompt)
+            if "provisional_l1" in payload["new_group"]:
+                self.fusions += 1
+                source_ids = payload["new_group"]["source_segment_ids"]
+                existing = payload["existing_memory"]
+                return {
+                    "topic": existing["topic"],
+                    "summary": "The user recorded another coffee purchase.",
+                    "operations": [{
+                        "operation": "add",
+                        "field": "user_memories",
+                        "value": {
+                            "type": "purchase",
+                            "content": "The user recorded another coffee purchase.",
+                        },
+                        "source_segment_ids": source_ids,
+                    }],
+                    "no_op_reason": None,
+                }
+        return super().complete(system_prompt, user_prompt)
+
+
+class NoOwnerMemoryFakeLLM(OwnerMemoryFakeLLM):
+    def complete(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        if system_prompt.startswith("You decide whether one provisional L1"):
+            return {"owner_memory_id": None, "reason": "new_topic"}
+        return super().complete(system_prompt, user_prompt)
+
+
 class DailyPipelineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.vectors = {
@@ -181,6 +215,76 @@ class DailyPipelineTests(unittest.TestCase):
         self.assertNotEqual(fusion_change["operations"][0]["item_id"], "s2")
         self.assertEqual(fusion_change["topic_source_segment_ids"], [])
         self.assertEqual(fusion_change["summary_source_segment_ids"], ["s2"])
+
+    def test_provisional_l1_is_routed_to_active_l2_owner(self) -> None:
+        llm = OwnerMemoryFakeLLM()
+        pipeline = DailyMemoryGraph(
+            llm=llm,
+            encoder=VectorEncoder(self.vectors),
+            config=self.config,
+        )
+        owner = MemoryRecord(
+            memory_id="owner-l2",
+            topic="Coffee spending",
+            summary="The user tracks coffee purchases.",
+            user_memories=[{
+                "type": "purchase",
+                "content": "The user spent $3.66 on coffee.",
+            }],
+            level=2,
+        )
+        pipeline.memories[owner.memory_id] = owner
+        pipeline.topic_owner_router.register(owner)
+        pipeline._add_memory_to_layered_graphs(owner)
+
+        pipeline.ingest_segment({
+            "segment_id": "new-coffee",
+            "text": "The user bought another coffee.",
+            "anchor": "coffee purchase",
+            "event_date": "2025-06-01",
+        })
+        result = pipeline.finalize()
+
+        self.assertEqual(result["changes"][0]["action"], "memory_owner_fused")
+        self.assertEqual(set(pipeline.memories), {"owner-l2"})
+        self.assertNotIn("new-coffee", pipeline.active_graph.nodes)
+        self.assertEqual(pipeline.memories["owner-l2"].level, 2)
+        self.assertIn("new-coffee", pipeline.memories["owner-l2"].source_segments)
+        self.assertIn("owner-l2", pipeline.layered_graph.graph(1).nodes)
+        self.assertIn("owner-l2", pipeline.layered_graph.graph(2).nodes)
+
+    def test_no_owner_keeps_provisional_l1_in_normal_layered_flow(self) -> None:
+        pipeline = DailyMemoryGraph(
+            llm=NoOwnerMemoryFakeLLM(),
+            encoder=VectorEncoder(self.vectors),
+            config=self.config,
+        )
+        owner = MemoryRecord(
+            memory_id="owner-l2",
+            topic="Coffee spending",
+            summary="The user tracks coffee purchases.",
+            level=2,
+        )
+        pipeline.memories[owner.memory_id] = owner
+        pipeline.topic_owner_router.register(owner)
+        pipeline._add_memory_to_layered_graphs(owner)
+        pipeline.ingest_segment({
+            "segment_id": "new-coffee",
+            "text": "The user bought another coffee.",
+            "anchor": "coffee purchase",
+            "event_date": "2025-06-01",
+        })
+
+        result = pipeline.finalize()
+        new_memory_ids = set(pipeline.memories) - {"owner-l2"}
+
+        self.assertEqual(len(new_memory_ids), 1)
+        new_memory_id = next(iter(new_memory_ids))
+        self.assertEqual(result["changes"][0]["action"], "memory_created")
+        self.assertIn(new_memory_id, pipeline.layered_graph.graph(1).nodes)
+        self.assertTrue(
+            pipeline.layered_graph.graph(1).graph.has_edge(new_memory_id, "owner-l2")
+        )
 
     def test_complete_conversation_path_cuts_anchors_and_extracts(self) -> None:
         llm = MemoryFakeLLM()

@@ -37,9 +37,16 @@ class ActiveNode:
 class ActiveGraph:
     """One-layer graph with topic-anchored memory supernodes."""
 
-    def __init__(self, encoder: Encoder, config: DailyGraphConfig) -> None:
+    def __init__(
+        self,
+        encoder: Encoder,
+        config: DailyGraphConfig,
+        *,
+        allow_memory_memory_edges: bool = False,
+    ) -> None:
         self.encoder = encoder
         self.config = config
+        self.allow_memory_memory_edges = allow_memory_memory_edges
         self.nodes: dict[str, ActiveNode] = {}
         self.vectors: dict[str, np.ndarray] = {}
         self.member_vectors: dict[str, np.ndarray] = {}
@@ -202,7 +209,11 @@ class ActiveGraph:
         left_kind = self.node_kind(left)
         right_kind = self.node_kind(right)
         if left_kind == right_kind == "memory":
-            return None
+            return (
+                self.config.new_memory_threshold
+                if self.allow_memory_memory_edges
+                else None
+            )
         if left_kind == right_kind == "segment":
             return self.config.new_new_threshold
         return self.config.new_memory_threshold
@@ -222,7 +233,11 @@ class ActiveGraph:
                 continue
             if self._edge_key(node_id, other_id) in self.blocked_edges:
                 continue
-            if node_kind == "memory" and self.node_kind(other_id) != "segment":
+            if (
+                node_kind == "memory"
+                and self.node_kind(other_id) != "segment"
+                and not self.allow_memory_memory_edges
+            ):
                 continue
             threshold = self._threshold(node_id, other_id)
             if threshold is None:
@@ -369,7 +384,11 @@ class LayeredActiveGraph:
 
         level = self._validate_level(level)
         if level not in self.graphs:
-            self.graphs[level] = ActiveGraph(self.encoder, self.config)
+            self.graphs[level] = ActiveGraph(
+                self.encoder,
+                self.config,
+                allow_memory_memory_edges=level > 0,
+            )
         return self.graphs[level]
 
     def levels(self) -> tuple[int, ...]:
@@ -458,7 +477,11 @@ class LayeredActiveGraph:
             self._validate_level(level)
             if not isinstance(graph_payload, dict):
                 raise ValueError(f"graph payload for level {level} must be an object")
-            active = ActiveGraph(self.encoder, self.config)
+            active = ActiveGraph(
+                self.encoder,
+                self.config,
+                allow_memory_memory_edges=level > 0,
+            )
             active.restore_nodes(
                 graph_payload.get("nodes", []),
                 graph_payload.get("blocked_edges", []),

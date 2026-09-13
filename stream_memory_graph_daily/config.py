@@ -20,6 +20,7 @@ class DailyGraphConfig:
     llm_retries: int = 3
     retrieval_rrf_k: int = 60
     postprocess_workers: int = 1
+    owner_candidate_top_k: int = 5
 
     def __post_init__(self) -> None:
         if self.knn_k < 1:
@@ -44,6 +45,8 @@ class DailyGraphConfig:
             raise ValueError("llm_retries must be positive")
         if self.retrieval_rrf_k < 1:
             raise ValueError("retrieval_rrf_k must be positive")
+        if self.owner_candidate_top_k < 1:
+            raise ValueError("owner_candidate_top_k must be positive")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

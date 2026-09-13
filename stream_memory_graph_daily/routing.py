@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 import numpy as np
 
 from .encoder import Encoder, unit_vector
+from .llm import JsonLLM
 from .models import MemoryRecord
+from .prompts import TOPIC_OWNER_ROUTING_PROMPT
 from .retrieval import entity_overlap, extract_entities, lex_tokens
 
 
@@ -22,6 +25,24 @@ class TopicWakeSignature:
     keywords: frozenset[str]
     entities: frozenset[str]
     direct_member_representations: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OwnerDecision:
+    """The only decision exposed by the owner-routing stage."""
+
+    owner_memory_id: str | None
+    reason: str
+    candidates: tuple[dict[str, Any], ...] = ()
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "owner_memory_id": self.owner_memory_id,
+            "reason": self.reason,
+            "candidates": [dict(row) for row in self.candidates],
+            **({"error": self.error} if self.error else {}),
+        }
 
 
 class TopicOwnerRouter:
@@ -93,6 +114,7 @@ class TopicOwnerRouter:
         summary: str = "",
         direct_members: Iterable[str] | None = None,
         k: int = 10,
+        min_level: int | None = None,
     ) -> list[dict[str, Any]]:
         if k < 1:
             return []
@@ -107,6 +129,8 @@ class TopicOwnerRouter:
         query_entities = extract_entities(query_text)
         rows: list[dict[str, Any]] = []
         for signature in self.signatures.values():
+            if min_level is not None and signature.level < min_level:
+                continue
             semantic_score = float(np.dot(query_vector, signature.vector))
             keyword_score = (
                 len(query_keywords & signature.keywords) / len(query_keywords)
@@ -133,6 +157,94 @@ class TopicOwnerRouter:
             )
         rows.sort(key=lambda row: (-row["score"], row["memory_id"]))
         return rows[:k]
+
+    @staticmethod
+    def _memory_prompt_dict(memory: MemoryRecord) -> dict[str, Any]:
+        value = memory.prompt_dict()
+        return {
+            "memory_id": memory.memory_id,
+            "level": memory.level,
+            "topic": value["topic"],
+            "summary": value["summary"],
+            "topic_context": value["topic_context"],
+            "user_memories": value["user_memories"],
+        }
+
+    def decide(
+        self,
+        provisional: MemoryRecord,
+        memories: Mapping[str, MemoryRecord],
+        *,
+        llm: JsonLLM | None,
+        top_k: int = 5,
+        audit_sink: Callable[[dict[str, Any]], None] | None = None,
+    ) -> OwnerDecision:
+        """Recall active L2+ candidates, then ask one LLM to compare them all."""
+
+        candidates = self.candidates(
+            provisional.topic,
+            summary=provisional.summary,
+            direct_members=(
+                str(member["representation"])
+                for member in provisional.direct_members
+            ),
+            k=top_k,
+            min_level=2,
+        )
+        candidate_ids = {str(row["memory_id"]) for row in candidates}
+        if not candidates:
+            decision = OwnerDecision(None, "new_topic", tuple(candidates))
+            if audit_sink:
+                audit_sink({"decision": decision.to_dict(), "candidates": []})
+            return decision
+        if llm is None:
+            decision = OwnerDecision(None, "uncertain", tuple(candidates), "llm_unavailable")
+            if audit_sink:
+                audit_sink({"decision": decision.to_dict(), "candidates": candidates})
+            return decision
+
+        candidate_payload = [
+            self._memory_prompt_dict(memories[memory_id])
+            for memory_id in [str(row["memory_id"]) for row in candidates]
+            if memory_id in memories
+        ]
+        payload = {
+            "provisional_l1": self._memory_prompt_dict(provisional),
+            "candidates": candidate_payload,
+        }
+        raw: Any = None
+        try:
+            raw = llm.complete(
+                TOPIC_OWNER_ROUTING_PROMPT,
+                "INPUT DATA\n" + json.dumps(payload, ensure_ascii=False, indent=2),
+            )
+            if not isinstance(raw, dict) or set(raw) != {"owner_memory_id", "reason"}:
+                raise ValueError("owner routing output fields must be exactly owner_memory_id and reason")
+            owner = raw["owner_memory_id"]
+            reason = raw["reason"]
+            if owner is not None and (
+                not isinstance(owner, str) or owner.strip() not in candidate_ids
+            ):
+                raise ValueError("owner_memory_id must be null or one recalled candidate")
+            if reason not in {"same_topic", "new_topic", "ambiguous", "uncertain"}:
+                raise ValueError("owner routing reason is not in the allowed enum")
+            if reason == "same_topic" and owner is None:
+                raise ValueError("same_topic requires an owner_memory_id")
+            if reason != "same_topic" and owner is not None:
+                raise ValueError("non same_topic routing must not select an owner")
+            decision = OwnerDecision(owner.strip() if isinstance(owner, str) else None, reason, tuple(candidates))
+        except Exception as exc:
+            decision = OwnerDecision(None, "uncertain", tuple(candidates), str(exc))
+        if audit_sink:
+            audit_sink(
+                {
+                    "request": payload,
+                    "response": raw,
+                    "decision": decision.to_dict(),
+                    "candidates": candidates,
+                }
+            )
+        return decision
 
     def memory_ids(self) -> set[str]:
         return set(self.signatures)

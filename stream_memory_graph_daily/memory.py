@@ -7,7 +7,11 @@ from typing import Any, Callable
 
 from .llm import JsonLLM, LLMUnavailable
 from .models import MemoryRecord, SegmentRecord
-from .prompts import MEMORY_EXTRACTION_PROMPT, MEMORY_FUSION_PROMPT
+from .prompts import (
+    MEMORY_EXTRACTION_PROMPT,
+    MEMORY_FUSION_PROMPT,
+    MEMORY_FUSION_FROM_L1_PROMPT,
+)
 
 
 AuditSink = Callable[[str, str, dict[str, Any]], None]
@@ -58,6 +62,15 @@ def direct_segment_member(segment: SegmentRecord) -> dict[str, Any]:
     }
 
 
+def direct_memory_member(memory: MemoryRecord) -> dict[str, Any]:
+    return {
+        "node_id": memory.memory_id,
+        "level": memory.level,
+        "kind": "memory",
+        "representation": memory.topic,
+    }
+
+
 def merge_direct_segment_members(
     existing: MemoryRecord, segments: list[SegmentRecord]
 ) -> list[dict[str, Any]]:
@@ -70,6 +83,19 @@ def merge_direct_segment_members(
         if member["node_id"] not in seen:
             output.append(member)
             seen.add(member["node_id"])
+    return output
+
+
+def merge_direct_memory_members(
+    existing: MemoryRecord, memory: MemoryRecord
+) -> list[dict[str, Any]]:
+    """Add one-hop memory provenance when a higher-level owner is fused."""
+
+    output = [dict(member) for member in existing.direct_members]
+    seen = {str(member["node_id"]) for member in output}
+    member = direct_memory_member(memory)
+    if member["node_id"] not in seen:
+        output.append(member)
     return output
 
 
@@ -174,16 +200,45 @@ class MemoryService:
         community_id: str,
         existing: MemoryRecord,
         segments: list[SegmentRecord],
+        *,
+        provisional: MemoryRecord | None = None,
     ) -> tuple[MemoryRecord, dict[str, Any]]:
+        if provisional is not None and segments:
+            raise ValueError("fusion cannot receive both segments and provisional memory")
+        if provisional is None and not segments:
+            raise ValueError("fusion needs segments or a provisional memory")
+        new_source_ids = (
+            set(provisional.source_segments)
+            if provisional is not None
+            else {segment.segment_id for segment in segments}
+        )
+        new_source_anchors = (
+            list(provisional.source_anchors)
+            if provisional is not None
+            else [segment.anchor for segment in segments]
+        )
         value = self._complete(
-            "memory_fusion",
-            MEMORY_FUSION_PROMPT,
+            "memory_fusion_from_l1" if provisional is not None else "memory_fusion",
+            MEMORY_FUSION_FROM_L1_PROMPT if provisional is not None else MEMORY_FUSION_PROMPT,
             {
                 "existing_memory": existing.prompt_dict(),
-                "new_group": {
-                    "community_id": community_id,
-                    "segments": [segment_prompt_row(segment) for segment in segments],
-                },
+                "new_group": (
+                    {
+                        "community_id": community_id,
+                        "provisional_l1": {
+                            "topic": provisional.topic,
+                            "summary": provisional.summary,
+                            "topic_context": provisional.topic_context,
+                            "user_memories": provisional.user_memories,
+                        },
+                        "source_segment_ids": sorted(new_source_ids),
+                    }
+                    if provisional is not None
+                    else {
+                        "community_id": community_id,
+                        "segments": [segment_prompt_row(segment) for segment in segments],
+                    }
+                ),
             },
         )
         required = {"topic", "summary", "operations", "no_op_reason"}
@@ -210,7 +265,7 @@ class MemoryService:
             "topic_context": [dict(item) for item in existing.topic_context],
             "user_memories": [dict(item) for item in existing.user_memories],
         }
-        new_segment_ids = {segment.segment_id for segment in segments}
+        new_segment_ids = new_source_ids
         touched_targets: set[tuple[str, str]] = set()
         normalized_operations: list[dict[str, Any]] = []
         for index, operation in enumerate(operations, start=1):
@@ -319,16 +374,20 @@ class MemoryService:
             topic_context=fields["topic_context"],
             user_memories=fields["user_memories"],
             source_anchors=list(
-                dict.fromkeys([*existing.source_anchors, *(segment.anchor for segment in segments)])
+                dict.fromkeys([*existing.source_anchors, *new_source_anchors])
             ),
             source_segments=list(
-                dict.fromkeys([*existing.source_segments, *(segment.segment_id for segment in segments)])
+                dict.fromkeys([*existing.source_segments, *new_source_ids])
             ),
             created_at=existing.created_at,
             updated_at=(now if semantic_change else existing.updated_at),
             version=existing.version + (1 if semantic_change else 0),
             level=existing.level,
-            direct_members=merge_direct_segment_members(existing, segments),
+            direct_members=(
+                merge_direct_memory_members(existing, provisional)
+                if provisional is not None
+                else merge_direct_segment_members(existing, segments)
+            ),
             last_mentioned_at=now,
         )
         return updated, {
@@ -344,3 +403,18 @@ class MemoryService:
                 sorted(new_segment_ids) if summary != existing.summary else []
             ),
         }
+
+    def fuse_provisional(
+        self,
+        community_id: str,
+        existing: MemoryRecord,
+        provisional: MemoryRecord,
+    ) -> tuple[MemoryRecord, dict[str, Any]]:
+        """Fuse only the semantic contents of a provisional L1 memory."""
+
+        return self.fuse(
+            community_id,
+            existing,
+            [],
+            provisional=provisional,
+        )

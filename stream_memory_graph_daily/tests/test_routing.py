@@ -19,6 +19,16 @@ class VectorEncoder:
         return rows[0] if scalar else rows
 
 
+class RoutingLLM:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def complete(self, system_prompt, user_prompt):
+        self.calls.append((system_prompt, user_prompt))
+        return self.response
+
+
 class TopicOwnerRouterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.encoder = VectorEncoder({
@@ -57,6 +67,41 @@ class TopicOwnerRouterTests(unittest.TestCase):
         self.router.rebuild([second])
 
         self.assertEqual(self.router.memory_ids(), {"m2"})
+
+    def test_decide_compares_only_recalled_l2_plus_candidates(self) -> None:
+        l1 = MemoryRecord("l1", "deployment", "L1 should not be recalled", level=1)
+        owner = MemoryRecord("l2", "deployment", "Deployment workflow", level=2)
+        provisional = MemoryRecord("p", "deployment", "New deployment event", level=1)
+        self.router.register(l1)
+        self.router.register(owner)
+        llm = RoutingLLM({"owner_memory_id": "l2", "reason": "same_topic"})
+
+        decision = self.router.decide(
+            provisional,
+            {"l1": l1, "l2": owner},
+            llm=llm,
+            top_k=5,
+        )
+
+        self.assertEqual(decision.owner_memory_id, "l2")
+        self.assertEqual(decision.reason, "same_topic")
+        self.assertEqual([row["memory_id"] for row in decision.candidates], ["l2"])
+        self.assertEqual(len(llm.calls), 1)
+
+    def test_invalid_owner_output_falls_back_to_no_owner(self) -> None:
+        owner = MemoryRecord("l2", "deployment", "Deployment workflow", level=2)
+        provisional = MemoryRecord("p", "deployment", "New deployment event", level=1)
+        self.router.register(owner)
+        llm = RoutingLLM({"owner_memory_id": "invented", "reason": "same_topic"})
+
+        decision = self.router.decide(
+            provisional,
+            {"l2": owner},
+            llm=llm,
+        )
+
+        self.assertIsNone(decision.owner_memory_id)
+        self.assertEqual(decision.reason, "uncertain")
 
 
 if __name__ == "__main__":

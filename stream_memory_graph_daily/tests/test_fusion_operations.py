@@ -194,6 +194,64 @@ class FusionOperationTests(unittest.TestCase):
                 self.assertEqual(updated.updated_at, self.existing.updated_at)
                 self.assertTrue(updated.last_mentioned_at)
 
+    def test_provisional_fusion_uses_only_l1_content_and_keeps_one_hop_member(self) -> None:
+        owner = MemoryRecord(
+            memory_id="l2-owner",
+            topic="Research project",
+            summary="The project has an open analysis task.",
+            topic_context=self.existing.topic_context,
+            user_memories=self.existing.user_memories,
+            source_anchors=self.existing.source_anchors,
+            source_segments=self.existing.source_segments,
+            level=2,
+            direct_members=[{
+                "node_id": "old-l1",
+                "level": 1,
+                "kind": "memory",
+                "representation": "Research project details",
+            }],
+        )
+        provisional = MemoryRecord(
+            memory_id="new-l1",
+            topic="Research project",
+            summary="The analysis is complete.",
+            topic_context=[],
+            user_memories=[{
+                "item_id": "new-fact",
+                "type": "outcome",
+                "content": "The user completed the analysis.",
+            }],
+            source_anchors=["research analysis completion"],
+            source_segments=["new-segment"],
+            level=1,
+            direct_members=[{
+                "node_id": "new-segment",
+                "level": 0,
+                "kind": "segment",
+                "representation": "research analysis completion",
+            }],
+        )
+        llm = OperationLLM({
+            "topic": owner.topic,
+            "summary": "The analysis is complete.",
+            "operations": [{
+                "operation": "add",
+                "field": "user_memories",
+                "value": {"type": "outcome", "content": "The user completed the analysis."},
+                "source_segment_ids": ["new-segment"],
+            }],
+            "no_op_reason": None,
+        })
+
+        updated, _ = MemoryService(llm).fuse_provisional("owner:l2-owner", owner, provisional)
+
+        self.assertEqual(updated.level, 2)
+        self.assertEqual(updated.direct_members[-1]["node_id"], "new-l1")
+        self.assertEqual(updated.direct_members[-1]["level"], 1)
+        self.assertEqual(updated.source_segments, ["old-segment", "new-segment"])
+        self.assertIn("provisional_l1", llm.payload["new_group"])
+        self.assertNotIn("segments", llm.payload["new_group"])
+
     def test_legacy_memory_state_gets_compatible_metadata_defaults(self) -> None:
         payload = self.existing.to_dict()
         payload.pop("level")

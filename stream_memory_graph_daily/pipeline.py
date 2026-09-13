@@ -16,14 +16,14 @@ from .community import ConstrainedCommunityPlanner, PlannedCommunity, stable_gro
 from .config import DailyGraphConfig
 from .cutting import ConversationCutter, CutSegment
 from .encoder import Encoder, HashEncoder
-from .graph import ActiveGraph
+from .graph import LayeredActiveGraph
 from .llm import JsonLLM
 from .memory import MemoryService, utc_now
 from .models import BoundaryRecord, MemoryRecord, SegmentRecord
 from .purification import CommunityPurifier, PurifiedGroup
 from .relations import MemoryRelationStore
 from .retrieval import BM25, entity_overlap, extract_entities, lex_tokens, rrf_fuse
-from .routing import TopicOwnerRouter
+from .routing import OwnerDecision, TopicOwnerRouter
 
 
 def normalize_date(value: Any) -> str:
@@ -61,7 +61,11 @@ class DailyMemoryGraph:
     ) -> None:
         self.config = config or DailyGraphConfig()
         self.llm = llm
-        self.active_graph = ActiveGraph(encoder or HashEncoder(), self.config)
+        graph_encoder = encoder or HashEncoder()
+        self.layered_graph = LayeredActiveGraph(graph_encoder, self.config, max_level=3)
+        # Keep graph 0 as the compatibility-facing active graph. It is the L0
+        # boundary graph (segments plus active L1 memories).
+        self.active_graph = self.layered_graph.graph(0)
         self.planner = ConstrainedCommunityPlanner(self.config)
         self.stage_audit: list[dict[str, Any]] = []
         self.cutter = ConversationCutter(llm, audit_sink=self._audit_stage)
@@ -117,6 +121,7 @@ class DailyMemoryGraph:
             },
             "pending_segment_ids": sorted(self.pending_segment_ids),
             "active_graph": self.active_graph.to_dict(),
+            "layered_active_graph": self.layered_graph.to_dict(),
         }
 
     def _date_transition(self, event_date: str) -> dict[str, Any] | None:
@@ -420,6 +425,45 @@ class DailyMemoryGraph:
 
         return self._memory_direct_representations(memory)
 
+    def _memory_graph_levels(self, memory: MemoryRecord) -> tuple[int, ...]:
+        """Return the adjacent boundary graphs containing an active memory."""
+
+        return tuple(
+            level
+            for level in (memory.level - 1, memory.level)
+            if 0 <= level <= self.layered_graph.max_level
+        )
+
+    def _add_memory_to_layered_graphs(self, memory: MemoryRecord) -> None:
+        for level in self._memory_graph_levels(memory):
+            self.layered_graph.add_memory(
+                level,
+                memory.memory_id,
+                memory.topic,
+                self._memory_direct_representations(memory),
+            )
+
+    def _update_memory_in_layered_graphs(self, memory: MemoryRecord) -> None:
+        for level in self._memory_graph_levels(memory):
+            graph = self.layered_graph.graph(level)
+            if memory.memory_id in graph.nodes:
+                self.layered_graph.update_memory_topic(
+                    level,
+                    memory.memory_id,
+                    memory.topic,
+                    self._memory_direct_representations(memory),
+                )
+            else:
+                self.layered_graph.add_memory(
+                    level,
+                    memory.memory_id,
+                    memory.topic,
+                    self._memory_direct_representations(memory),
+                )
+
+    def _remove_memory_from_layered_graphs(self, memory_id: str) -> None:
+        self.layered_graph.remove_nodes({memory_id})
+
     def _run_purification_task(
         self,
         task: tuple[PlannedCommunity, list[SegmentRecord], list[MemoryRecord]],
@@ -479,6 +523,51 @@ class DailyMemoryGraph:
         except Exception as exc:
             return {"kind": "error", "error": exc}, audit_events
 
+    def _run_provisional_task(
+        self,
+        task: tuple[PlannedCommunity, list[SegmentRecord]],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Extract one temporary L1 without changing pipeline state."""
+
+        group, segments = task
+        audit_events: list[dict[str, Any]] = []
+
+        def collect_audit(stage: str, action: str, values: dict[str, Any]) -> None:
+            audit_events.append({"stage": stage, "action": action, "values": values})
+
+        service = MemoryService(self.llm, audit_sink=collect_audit)
+        try:
+            return {
+                "kind": "provisional",
+                "memory": service.extract(group.community_id, segments),
+            }, audit_events
+        except Exception as exc:
+            return {"kind": "error", "error": exc}, audit_events
+
+    def _run_owner_fusion_task(
+        self,
+        task: tuple[str, MemoryRecord, MemoryRecord],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        owner_id, owner, provisional = task
+        audit_events: list[dict[str, Any]] = []
+
+        def collect_audit(stage: str, action: str, values: dict[str, Any]) -> None:
+            audit_events.append({"stage": stage, "action": action, "values": values})
+
+        service = MemoryService(self.llm, audit_sink=collect_audit)
+        try:
+            updated, decision = service.fuse_provisional(
+                f"owner:{owner_id}:{provisional.memory_id}", owner, provisional
+            )
+            return {
+                "kind": "fused_owner",
+                "existing_before": owner.to_dict(),
+                "updated": updated,
+                "decision": decision,
+            }, audit_events
+        except Exception as exc:
+            return {"kind": "error", "error": exc}, audit_events
+
     def _append_task_audits(self, audit_events: list[dict[str, Any]]) -> None:
         for event in audit_events:
             self._audit_stage(
@@ -486,6 +575,83 @@ class DailyMemoryGraph:
                 str(event["action"]),
                 dict(event.get("values") or {}),
             )
+
+    def _apply_owner_fusion_result(
+        self,
+        provisional: MemoryRecord,
+        owner_id: str,
+        checkpoint_date: str,
+        changes: list[dict[str, Any]],
+        retry_ids: set[str],
+        *,
+        parent_community_id: str,
+        purification_group_id: str,
+        decision: OwnerDecision,
+        result: dict[str, Any],
+    ) -> bool:
+        """Apply fast L1→active-L2+ fusion; return false for ordinary fallback."""
+
+        segment_ids = set(provisional.source_segments)
+        try:
+            if result.get("kind") == "error":
+                raise result["error"]
+            owner = self.memories[owner_id]
+            updated = result["updated"]
+            fusion_decision = result["decision"]
+            self.memories[owner_id] = updated
+            self.topic_owner_router.register(updated)
+            self._update_memory_in_layered_graphs(updated)
+            self._archive_segments(segment_ids, "compressed", owner_id)
+            self._audit_stage(
+                "memory_apply",
+                "owner_fused",
+                {
+                    "checkpoint_date": checkpoint_date,
+                    "community_id": f"owner:{owner_id}:{provisional.memory_id}",
+                    "parent_community_id": parent_community_id,
+                    "purification_group_id": purification_group_id,
+                    "owner_decision": decision.to_dict(),
+                    "input": {
+                        "owner_memory": owner.to_dict(),
+                        "provisional_l1": provisional.to_dict(),
+                    },
+                    "output": {
+                        "memory": updated.to_dict(),
+                        "decision": fusion_decision,
+                    },
+                },
+            )
+            changes.append(
+                {
+                    "community_id": f"owner:{owner_id}:{provisional.memory_id}",
+                    "parent_community_id": parent_community_id,
+                    "purification_group_id": purification_group_id,
+                    "source": "owner_routing",
+                    "action": "memory_owner_fused",
+                    "memory_id": owner_id,
+                    "owner_decision": decision.to_dict(),
+                    "decision": fusion_decision["decision"],
+                    "operations": fusion_decision["operations"],
+                    "segment_ids": sorted(segment_ids),
+                }
+            )
+            return True
+        except Exception as exc:
+            error = {
+                "at": utc_now(),
+                "checkpoint_date": checkpoint_date,
+                "community_id": f"owner:{owner_id}:{provisional.memory_id}",
+                "parent_community_id": parent_community_id,
+                "purification_group_id": purification_group_id,
+                "segment_ids": sorted(segment_ids),
+                "owner_memory_id": owner_id,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+            self.llm_errors.append(error)
+            self._audit_stage("memory_apply", "owner_fusion_error", error)
+            changes.append({**error, "action": "owner_fusion_failed_fallback_to_l1"})
+            return False
 
     def _apply_memory_result(
         self,
@@ -512,11 +678,7 @@ class DailyMemoryGraph:
                 decision = result["decision"]
                 self.memories[memory_id] = updated
                 self.topic_owner_router.register(updated)
-                self.active_graph.update_memory_topic(
-                    memory_id,
-                    updated.topic,
-                    self._memory_direct_representations(updated),
-                )
+                self._update_memory_in_layered_graphs(updated)
                 self._archive_segments(segment_ids, "compressed", memory_id)
                 self._audit_stage(
                     "memory_apply",
@@ -592,11 +754,7 @@ class DailyMemoryGraph:
             self.memories[memory.memory_id] = memory
             self.topic_owner_router.register(memory)
             self._archive_segments(segment_ids, "compressed", memory.memory_id)
-            self.active_graph.add_memory(
-                memory.memory_id,
-                memory.topic,
-                self._memory_direct_representations(memory),
-            )
+            self._add_memory_to_layered_graphs(memory)
             self._audit_stage(
                 "memory_apply",
                 "created",
@@ -903,8 +1061,117 @@ class DailyMemoryGraph:
                     self.segments[segment_id]
                     for segment_id in sorted(purified_segment_ids)
                 ]
+                parent_context = (group.community_id, purified.group_id)
+
+                # Raw score is only a gate for the LLM comparison. The query
+                # uses the temporary community anchors so that we do not pay
+                # for provisional extraction when no active L2+ is recallable.
+                recall_rows = self.topic_owner_router.candidates(
+                    " ".join(segment.anchor for segment in purified_segments),
+                    direct_members=[segment.anchor for segment in purified_segments],
+                    k=self.config.owner_candidate_top_k,
+                    min_level=2,
+                )
+                if recall_rows:
+                    provisional_result, provisional_audits = self._run_provisional_task(
+                        (purified_group, purified_segments)
+                    )
+                    self._append_task_audits(provisional_audits)
+                    provisional = provisional_result.get("memory")
+                    if provisional_result.get("kind") == "provisional" and provisional is not None:
+                        routing_audit: list[dict[str, Any]] = []
+                        owner_decision = self.topic_owner_router.decide(
+                            provisional,
+                            self.memories,
+                            llm=self.llm,
+                            top_k=self.config.owner_candidate_top_k,
+                            audit_sink=routing_audit.append,
+                        )
+                        for audit in routing_audit:
+                            self._audit_stage(
+                                "owner_routing",
+                                "llm_call" if "request" in audit else "decided",
+                                {
+                                    "checkpoint_date": checkpoint_date,
+                                    "parent_community_id": group.community_id,
+                                    "purification_group_id": purified.group_id,
+                                    **audit,
+                                },
+                            )
+                        self._trace(
+                            "owner_routing",
+                            provisional_memory_id=provisional.memory_id,
+                            owner_memory_id=owner_decision.owner_memory_id,
+                            reason=owner_decision.reason,
+                            candidates=[row["memory_id"] for row in recall_rows],
+                        )
+                        if owner_decision.owner_memory_id is not None:
+                            owner_id = owner_decision.owner_memory_id
+                            owner = self.memories.get(owner_id)
+                            if owner is not None:
+                                owner_result, owner_audits = self._run_owner_fusion_task(
+                                    (owner_id, owner, provisional)
+                                )
+                                self._append_task_audits(owner_audits)
+                                if self._apply_owner_fusion_result(
+                                    provisional,
+                                    owner_id,
+                                    checkpoint_date,
+                                    changes,
+                                    retry_ids,
+                                    parent_community_id=group.community_id,
+                                    purification_group_id=purified.group_id,
+                                    decision=owner_decision,
+                                    result=owner_result,
+                                ):
+                                    continue
+                                # Fusion failure deliberately falls through
+                                # to the ordinary L1 path below.
+                        normal_memory_ids = {
+                            memory_id
+                            for memory_id in purified_memory_ids
+                            if memory_id in self.memories
+                            and self.memories[memory_id].level == 1
+                        }
+                        if not normal_memory_ids:
+                            self._apply_memory_result(
+                                PlannedCommunity(
+                                    community_id=purified_group.community_id,
+                                    memory_ids=set(),
+                                    segment_ids=purified_segment_ids,
+                                    source=purified_group.source,
+                                ),
+                                purified_segments,
+                                checkpoint_date,
+                                changes,
+                                retry_ids,
+                                parent_community_id=group.community_id,
+                                purification_group_id=purified.group_id,
+                                result={"kind": "extracted", "memory": provisional},
+                            )
+                            continue
+                        purified_group = PlannedCommunity(
+                            community_id=purified_group.community_id,
+                            memory_ids=normal_memory_ids,
+                            segment_ids=purified_segment_ids,
+                            source=purified_group.source,
+                        )
+
+                # No L2+ candidate, an invalid owner decision, or a routing/
+                # fusion failure all use the existing ordinary L1 path.
+                normal_memory_ids = {
+                    memory_id
+                    for memory_id in purified_group.memory_ids
+                    if memory_id in self.memories and self.memories[memory_id].level == 1
+                }
+                purified_group = PlannedCommunity(
+                    community_id=purified_group.community_id,
+                    memory_ids=normal_memory_ids,
+                    segment_ids=purified_segment_ids,
+                    source=purified_group.source,
+                )
                 memory_tasks.append((purified_group, purified_segments))
-                memory_contexts.append((group.community_id, purified.group_id))
+                memory_contexts.append(parent_context)
 
         if self.config.postprocess_workers > 1 and len(memory_tasks) > 1:
             with ThreadPoolExecutor(
@@ -975,7 +1242,7 @@ class DailyMemoryGraph:
     def retrieve(self, query: str, k: int = 10) -> list[dict[str, Any]]:
         if k < 1:
             return []
-        if not self.active_graph.nodes:
+        if not self.memories and not self.active_graph.segment_ids():
             return []
 
         def memory_fields(memory: MemoryRecord) -> list[str]:
@@ -987,16 +1254,10 @@ class DailyMemoryGraph:
             )
             return [value for value in fields if value.strip()]
 
-        def node_fields(node_id: str) -> list[str]:
-            node = self.active_graph.nodes[node_id]
-            if node.kind == "memory":
-                memory = self.memories.get(node_id)
-                if memory is not None:
-                    return memory_fields(memory)
-                return [node.representation]
+        def segment_fields(node_id: str) -> list[str]:
             segment = self.segments.get(node_id)
             if segment is None:
-                return [node.representation]
+                return []
             return [value for value in (segment.text, segment.anchor) if value.strip()]
 
         node_rows = []
@@ -1004,16 +1265,22 @@ class DailyMemoryGraph:
         semantic_owner_ids: list[str] = []
         lexical_documents: list[tuple[str, str]] = []
         entity_documents: dict[str, str] = {}
-        for node_id in sorted(self.active_graph.nodes):
-            node = self.active_graph.nodes[node_id]
-            fields = node_fields(node_id)
+        retrieval_nodes: list[tuple[str, str, list[str]]] = [
+            (memory_id, "memory", memory_fields(memory))
+            for memory_id, memory in sorted(self.memories.items())
+        ]
+        retrieval_nodes.extend(
+            (segment_id, "segment", segment_fields(segment_id))
+            for segment_id in sorted(self.active_graph.segment_ids())
+        )
+        for node_id, kind, fields in retrieval_nodes:
             lexical_document = " ".join(fields)
             row = {
-                "id": node_id if node.kind == "memory" else f"segment:{node_id}",
+                "id": node_id if kind == "memory" else f"segment:{node_id}",
                 "node_id": node_id,
-                "kind": node.kind,
+                "kind": kind,
             }
-            if node.kind == "memory":
+            if kind == "memory":
                 memory = self.memories.get(node_id)
                 if memory is None:
                     continue
@@ -1156,6 +1423,7 @@ class DailyMemoryGraph:
             "boundaries": {key: value.to_dict() for key, value in sorted(self.boundaries.items())},
             "skipped_segments": self.skipped_segments,
             "active_graph": self.active_graph.to_dict(),
+            "layered_active_graph": self.layered_graph.to_dict(),
             "pending_segment_ids": sorted(self.pending_segment_ids),
             "cannot_link_memory_pairs": [list(pair) for pair in sorted(self.cannot_link_memory_pairs)],
             "current_date": self.current_date,
@@ -1223,20 +1491,19 @@ class DailyMemoryGraph:
         instance.trace = list(payload.get("trace", []))
         instance.stage_audit = list(payload.get("stage_audit", []))
         instance.llm_errors = list(payload.get("llm_errors", []))
-        active_graph_payload = payload.get("active_graph", {})
-        nodes = active_graph_payload.get("nodes", [])
-        instance.active_graph.restore_nodes(
-            nodes,
-            active_graph_payload.get("blocked_edges", []),
-        )
-        for memory_id, memory in instance.memories.items():
-            instance.active_graph.update_memory_topic(
-                memory_id,
-                memory.topic,
-                instance._memory_direct_representations(memory),
+        layered_graph_payload = payload.get("layered_active_graph")
+        if isinstance(layered_graph_payload, dict) and "graphs" in layered_graph_payload:
+            instance.layered_graph.restore(layered_graph_payload)
+            instance.active_graph = instance.layered_graph.graph(0)
+        else:
+            active_graph_payload = payload.get("active_graph", {})
+            instance.layered_graph.restore(
+                {"graphs": {"0": active_graph_payload}}
             )
-        instance.active_graph.rebuild_edges()
-        if set(instance.active_graph.memory_ids()) != set(instance.memories):
+            instance.active_graph = instance.layered_graph.graph(0)
+        for memory in instance.memories.values():
+            instance._update_memory_in_layered_graphs(memory)
+        if instance.layered_graph.memory_ids() != set(instance.memories):
             raise ValueError("state memory records and active memory nodes do not match")
         instance.topic_owner_router.rebuild(instance.memories.values())
         unknown_active_segments = instance.active_graph.segment_ids() - set(instance.segments)

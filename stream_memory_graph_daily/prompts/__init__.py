@@ -28,6 +28,8 @@ CUTTING_PROMPT = load_stage_prompt("cutting.txt")
 ANCHOR_PROMPT = load_stage_prompt("anchor_extraction.txt")
 MEMORY_EXTRACTION_PROMPT = load_stage_prompt("memory_extraction.txt")
 MEMORY_FUSION_PROMPT = load_stage_prompt("memory_fusion.txt")
+MEMORY_FUSION_FROM_L1_PROMPT = load_stage_prompt("memory_fusion_from_l1.txt")
+TOPIC_OWNER_ROUTING_PROMPT = load_stage_prompt("topic_owner_routing.txt")
 COMMUNITY_PURIFICATION_PROMPT = load_stage_prompt("community_purification.txt")
 
 __all__ = [
@@ -36,6 +38,8 @@ __all__ = [
     "CUTTING_PROMPT",
     "MEMORY_EXTRACTION_PROMPT",
     "MEMORY_FUSION_PROMPT",
+    "MEMORY_FUSION_FROM_L1_PROMPT",
+    "TOPIC_OWNER_ROUTING_PROMPT",
     "SHARED_SEMANTICS",
     "load_prompt",
     "load_stage_prompt",

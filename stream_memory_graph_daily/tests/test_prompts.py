@@ -8,7 +8,9 @@ from stream_memory_graph_daily.prompts import (
     CUTTING_PROMPT,
     MEMORY_EXTRACTION_PROMPT,
     MEMORY_FUSION_PROMPT,
+    MEMORY_FUSION_FROM_L1_PROMPT,
     SHARED_SEMANTICS,
+    TOPIC_OWNER_ROUTING_PROMPT,
 )
 
 
@@ -20,6 +22,8 @@ class PromptCompositionTests(unittest.TestCase):
             COMMUNITY_PURIFICATION_PROMPT,
             MEMORY_EXTRACTION_PROMPT,
             MEMORY_FUSION_PROMPT,
+            MEMORY_FUSION_FROM_L1_PROMPT,
+            TOPIC_OWNER_ROUTING_PROMPT,
         ]
         for prompt in prompts:
             self.assertNotIn("{{SHARED_SEMANTICS}}", prompt)
@@ -44,6 +48,8 @@ class PromptCompositionTests(unittest.TestCase):
         self.assertIn('"user_memories"', MEMORY_EXTRACTION_PROMPT)
         self.assertTrue(MEMORY_FUSION_PROMPT.startswith("You maintain structured memory"))
         self.assertIn('"operations"', MEMORY_FUSION_PROMPT)
+        self.assertIn("provisional_l1", MEMORY_FUSION_FROM_L1_PROMPT)
+        self.assertIn('"owner_memory_id"', TOPIC_OWNER_ROUTING_PROMPT)
 
     def test_memory_prompts_keep_one_time_facts_and_guard_learning_inference(self) -> None:
         for prompt in (MEMORY_EXTRACTION_PROMPT, MEMORY_FUSION_PROMPT):
