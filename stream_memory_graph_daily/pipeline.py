@@ -23,6 +23,7 @@ from .models import BoundaryRecord, MemoryRecord, SegmentRecord
 from .purification import CommunityPurifier, PurifiedGroup
 from .relations import MemoryRelationStore
 from .retrieval import BM25, entity_overlap, extract_entities, lex_tokens, rrf_fuse
+from .routing import TopicOwnerRouter
 
 
 def normalize_date(value: Any) -> str:
@@ -68,6 +69,7 @@ class DailyMemoryGraph:
         self.community_purifier = CommunityPurifier(llm, audit_sink=self._audit_stage)
         self.memory_service = MemoryService(llm, audit_sink=self._audit_stage)
         self.relations = MemoryRelationStore(enabled=False)
+        self.topic_owner_router = TopicOwnerRouter(self.active_graph.encoder)
 
         self.segments: dict[str, SegmentRecord] = {}
         self.memories: dict[str, MemoryRecord] = {}
@@ -509,6 +511,7 @@ class DailyMemoryGraph:
                 updated = result["updated"]
                 decision = result["decision"]
                 self.memories[memory_id] = updated
+                self.topic_owner_router.register(updated)
                 self.active_graph.update_memory_topic(
                     memory_id,
                     updated.topic,
@@ -587,6 +590,7 @@ class DailyMemoryGraph:
             if memory.memory_id in self.memories:
                 raise ValueError(f"generated duplicate memory_id {memory.memory_id}")
             self.memories[memory.memory_id] = memory
+            self.topic_owner_router.register(memory)
             self._archive_segments(segment_ids, "compressed", memory.memory_id)
             self.active_graph.add_memory(
                 memory.memory_id,
@@ -1234,6 +1238,7 @@ class DailyMemoryGraph:
         instance.active_graph.rebuild_edges()
         if set(instance.active_graph.memory_ids()) != set(instance.memories):
             raise ValueError("state memory records and active memory nodes do not match")
+        instance.topic_owner_router.rebuild(instance.memories.values())
         unknown_active_segments = instance.active_graph.segment_ids() - set(instance.segments)
         if unknown_active_segments:
             raise ValueError(f"active graph has unknown segments: {sorted(unknown_active_segments)}")
