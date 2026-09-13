@@ -5,6 +5,7 @@ import unittest
 from stream_memory_graph_daily.prompts import (
     ANCHOR_PROMPT,
     COMMUNITY_PURIFICATION_PROMPT,
+    COMMUNITY_TOPIC_PARTITION_PROMPT,
     CUTTING_PROMPT,
     MEMORY_EXTRACTION_PROMPT,
     MEMORY_FUSION_PROMPT,
@@ -22,6 +23,7 @@ class PromptCompositionTests(unittest.TestCase):
             CUTTING_PROMPT,
             ANCHOR_PROMPT,
             COMMUNITY_PURIFICATION_PROMPT,
+            COMMUNITY_TOPIC_PARTITION_PROMPT,
             MEMORY_EXTRACTION_PROMPT,
             MEMORY_FUSION_PROMPT,
             MEMORY_FUSION_FROM_L1_PROMPT,
@@ -56,6 +58,13 @@ class PromptCompositionTests(unittest.TestCase):
             )
         )
         self.assertIn('"groups"', COMMUNITY_PURIFICATION_PROMPT)
+        self.assertTrue(
+            COMMUNITY_TOPIC_PARTITION_PROMPT.startswith(
+                "Conservatively partition one graph community"
+            )
+        )
+        self.assertIn("same concrete subject or object", COMMUNITY_TOPIC_PARTITION_PROMPT)
+        self.assertIn('"groups"', COMMUNITY_TOPIC_PARTITION_PROMPT)
         self.assertIn("extract one structured topic-memory", MEMORY_EXTRACTION_PROMPT)
         self.assertIn('"user_memories"', MEMORY_EXTRACTION_PROMPT)
         self.assertTrue(MEMORY_FUSION_PROMPT.startswith("You maintain structured memory"))

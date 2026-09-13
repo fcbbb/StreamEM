@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from .llm import JsonLLM, LLMUnavailable
 from .models import MemoryRecord, SegmentRecord
-from .prompts import COMMUNITY_PURIFICATION_PROMPT
+from .prompts import COMMUNITY_TOPIC_PARTITION_PROMPT
 
 
 AuditSink = Callable[[str, str, dict[str, Any]], None]
@@ -108,7 +108,7 @@ class CommunityPurifier:
                 "llm_call",
                 {
                     "request": request,
-                    "system_prompt": COMMUNITY_PURIFICATION_PROMPT,
+                    "system_prompt": COMMUNITY_TOPIC_PARTITION_PROMPT,
                     "response": None,
                     "error_type": type(error).__name__,
                     "error": str(error),
@@ -119,7 +119,7 @@ class CommunityPurifier:
         response: dict[str, Any] | None = None
         try:
             response = self.llm.complete(
-                COMMUNITY_PURIFICATION_PROMPT,
+                COMMUNITY_TOPIC_PARTITION_PROMPT,
                 "INPUT DATA\n" + json.dumps(request, ensure_ascii=False, indent=2),
             )
             if set(response) != {"groups"} or not isinstance(response["groups"], list):
@@ -187,7 +187,7 @@ class CommunityPurifier:
                 "llm_call",
                 {
                     "request": request,
-                    "system_prompt": COMMUNITY_PURIFICATION_PROMPT,
+                    "system_prompt": COMMUNITY_TOPIC_PARTITION_PROMPT,
                     "response": response,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
@@ -199,7 +199,7 @@ class CommunityPurifier:
             "llm_call",
             {
                 "request": request,
-                "system_prompt": COMMUNITY_PURIFICATION_PROMPT,
+                "system_prompt": COMMUNITY_TOPIC_PARTITION_PROMPT,
                 "response": response,
             },
         )

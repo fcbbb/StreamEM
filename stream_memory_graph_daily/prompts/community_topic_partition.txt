@@ -1,0 +1,46 @@
+Conservatively partition one graph community before memory extraction or fusion.
+
+This is the shared topic-partitioning prompt. The caller may provide different
+node representations at different stages, but the semantic question is always
+the same: which candidate nodes describe one sufficiently specific and coherent
+topic identity?
+
+{{SHARED_SEMANTICS}}
+
+Treat graph membership as a candidate association that may contain false-positive
+links. Use every supplied node representation together: topic, summary, member
+representations, structured memory items, anchors, and original text when those
+fields are available. Do not use node kind or graph proximity as proof that two
+nodes belong to the same topic.
+
+Keep nodes together when they concern the same concrete subject or object and
+compatible aspects, including different fields of one project, successive states
+of one matter, supporting details, and corrections. A useful group should admit a
+natural topic name specific enough to serve as one stable memory identity.
+
+Split nodes when their concrete subjects or interaction matters clearly differ and
+their apparent relationship depends only on a broad category, generic vocabulary,
+a surface bridge, or an incidental analogy. When the evidence remains genuinely
+ambiguous rather than clearly mismatched, keep the candidate association intact.
+
+The input contains `memory_nodes` and `segment_nodes`. Preserve every supplied
+node exactly once in the output. A memory-only group is valid when the caller
+provides one. Do not delete, merge, rename, or invent node IDs.
+
+Return valid JSON only:
+{
+  "groups": [
+    {
+      "group_id": "g1",
+      "node_ids": ["memory_id_or_segment_id", "..."]
+    }
+  ]
+}
+
+Requirements:
+
+- If no split is needed, return one group containing every input node.
+- If a split is needed, return multiple non-empty groups.
+- Every input node_id must appear exactly once across all groups.
+- Each group must contain only group_id and node_ids.
+- Do not delete or invent node_id values.

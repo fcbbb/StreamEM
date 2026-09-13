@@ -247,4 +247,5 @@ L3 的直接成员表示：L2 memory representation
 - [x] 暂不在 purification 中增加 owner 冲突输入；当前社区纯化规则足够，后续根据评测再决定。
 - [ ] 先使用全局统一语义阈值，并增加按层 edge density、degree、社区规模和误连率评测；仅在必要时再引入分层阈值校准。
 - [x] 保留现有 extraction/fusion 任务 Prompt，新增公共层级策略 Prompt；由 `target_level` 注入该层的职责、必须保留、可压缩、可丢弃和禁止推断信息类型，并在调用 payload 中保留同一份结构化策略。当前原始 segment extraction 固定生成 L1，L2+ 通过同层 owner fusion 使用对应策略。
+- [x] 抽取公共主题分组 Prompt；当前 purification 继续使用原有的 `memory_nodes`/`segment_nodes` 输入适配和结果校验，后续高层晋升只需替换节点输入适配器，不预先复制分层 Prompt。
 - [ ] 增加以下测试：高层主题回归、L1/L2 重复 owner 消除、不同 owner 的 L0 拆分、快速路径失败回退、L1→L2 全局替换、无 owner 的新主题逐层晋升。

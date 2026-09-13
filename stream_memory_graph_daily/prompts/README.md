@@ -9,7 +9,7 @@
 
 集中后的文件移除了原设计文档中的实验说明、调用命令和中英文重复内容，仅保留运行所需的任务定义、保留规则和输出格式。
 
-`shared_semantics.txt` 统一定义实质内容、主题身份、同主题关系、明确用户信息、已建立主题上下文和证据保真规则。五份阶段 Prompt 各自保留 `{{SHARED_SEMANTICS}}` 标记，`prompts/__init__.py` 在加载时将同一份共享定义注入每个运行时 Prompt。共享定义只包含各阶段共同使用的判断口径；具体决策顺序和输出契约仍由阶段文件定义。
+`shared_semantics.txt` 统一定义实质内容、主题身份、同主题关系、明确用户信息、已建立主题上下文和证据保真规则。阶段 Prompt 和公共主题分组 Prompt 各自保留 `{{SHARED_SEMANTICS}}` 标记，`prompts/__init__.py` 在加载时将同一份共享定义注入每个运行时 Prompt。共享定义只包含各阶段共同使用的判断口径；具体决策顺序和输出契约仍由阶段文件定义。
 
 各模块会在调用时追加实际输入数据：
 
@@ -18,6 +18,7 @@
 - `memory_extraction.txt`：由记忆模块追加纯化后的单主题社区；
 - `memory_fusion.txt`：由记忆模块追加完整的 existing memory 和新 segment group。
 - `community_purification.txt`：由 checkpoint 阶段追加一个已按最高 memory 相似度分配好的 community group；输入包含至多一个已有 memory 节点和新 segment 节点，模型可以返回一个或多个 node group，并把不属于该 memory 的 segment 分到无 memory 的新主题 group。拆分得到的单 segment group 由调用方保留在 active graph，不再调用 extraction/fusion；拆分组之间的旧图边也会被切断。
+- `community_topic_partition.txt`：公共主题分组 Prompt；当前 purification 使用现有的 `memory_nodes`/`segment_nodes` 输入适配和校验，后续高层节点分组可以复用同一套主题一致性规则。
 
 Prompt 返回结果仍会由调用方执行严格 JSON 字段、稳定 ID 和来源可追溯性验证。
 

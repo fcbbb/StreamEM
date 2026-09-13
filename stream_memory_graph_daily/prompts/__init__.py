@@ -33,6 +33,9 @@ MEMORY_FUSION_PROMPT = load_stage_prompt("memory_fusion.txt")
 MEMORY_FUSION_FROM_L1_PROMPT = load_stage_prompt("memory_fusion_from_l1.txt")
 TOPIC_OWNER_ROUTING_PROMPT = load_stage_prompt("topic_owner_routing.txt")
 COMMUNITY_PURIFICATION_PROMPT = load_stage_prompt("community_purification.txt")
+COMMUNITY_TOPIC_PARTITION_PROMPT = load_stage_prompt(
+    "community_topic_partition.txt"
+)
 MEMORY_LEVEL_POLICY_PROMPT = load_prompt("memory_level_policy.txt")
 
 
@@ -61,6 +64,7 @@ def render_memory_level_policy(target_level: int) -> str:
 __all__ = [
     "ANCHOR_PROMPT",
     "COMMUNITY_PURIFICATION_PROMPT",
+    "COMMUNITY_TOPIC_PARTITION_PROMPT",
     "CUTTING_PROMPT",
     "MEMORY_EXTRACTION_PROMPT",
     "MEMORY_FUSION_PROMPT",
