@@ -395,13 +395,28 @@ class DailyMemoryGraph:
             self.boundaries.pop(segment_id, None)
         self.active_graph.remove_nodes(segment_ids)
 
-    def _memory_member_anchors(self, memory: MemoryRecord) -> list[str]:
+    def _memory_direct_representations(self, memory: MemoryRecord) -> list[str]:
+        direct_members = [
+            str(member["representation"]).strip()
+            for member in memory.direct_members
+            if str(member.get("representation", "")).strip()
+        ]
+        if direct_members:
+            return direct_members
+
+        # Legacy states predate direct_members.  Keep their old behavior as
+        # a migration fallback; new multi-layer memories do not use this path.
         anchors = [
             self.segments[segment_id].anchor
             for segment_id in memory.source_segments
             if segment_id in self.segments
         ]
         return anchors or list(memory.source_anchors)
+
+    def _memory_member_anchors(self, memory: MemoryRecord) -> list[str]:
+        """Backward-compatible alias for saved workflow code and callers."""
+
+        return self._memory_direct_representations(memory)
 
     def _run_purification_task(
         self,
@@ -497,7 +512,7 @@ class DailyMemoryGraph:
                 self.active_graph.update_memory_topic(
                     memory_id,
                     updated.topic,
-                    self._memory_member_anchors(updated),
+                    self._memory_direct_representations(updated),
                 )
                 self._archive_segments(segment_ids, "compressed", memory_id)
                 self._audit_stage(
@@ -576,7 +591,7 @@ class DailyMemoryGraph:
             self.active_graph.add_memory(
                 memory.memory_id,
                 memory.topic,
-                self._memory_member_anchors(memory),
+                self._memory_direct_representations(memory),
             )
             self._audit_stage(
                 "memory_apply",
@@ -1214,7 +1229,7 @@ class DailyMemoryGraph:
             instance.active_graph.update_memory_topic(
                 memory_id,
                 memory.topic,
-                instance._memory_member_anchors(memory),
+                instance._memory_direct_representations(memory),
             )
         instance.active_graph.rebuild_edges()
         if set(instance.active_graph.memory_ids()) != set(instance.memories):

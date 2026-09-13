@@ -18,7 +18,17 @@ class ActiveNode:
     node_id: str
     kind: NodeKind
     representation: str
-    member_representations: list[str] = field(default_factory=list)
+    direct_member_representations: list[str] = field(default_factory=list)
+
+    @property
+    def member_representations(self) -> list[str]:
+        """Backward-compatible alias for older callers and state readers."""
+
+        return self.direct_member_representations
+
+    @member_representations.setter
+    def member_representations(self, values: list[str]) -> None:
+        self.direct_member_representations = values
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -47,7 +57,7 @@ class ActiveGraph:
         node_id: str,
         kind: NodeKind,
         representation: str,
-        member_representations: list[str] | None = None,
+        direct_member_representations: list[str] | None = None,
     ) -> None:
         node_id = str(node_id).strip()
         representation = str(representation).strip()
@@ -60,13 +70,15 @@ class ActiveGraph:
         # are separate member votes when calculating supernode consensus.
         members = [
             str(value).strip()
-            for value in (member_representations or [])
+            for value in (direct_member_representations or [])
             if str(value).strip()
         ]
         if kind == "segment" and members:
             raise ValueError("segment nodes cannot have member representations")
         vector = unit_vector(self.encoder.encode([representation])[0])
-        self.nodes[node_id] = ActiveNode(node_id, kind, representation, members)
+        self.nodes[node_id] = ActiveNode(
+            node_id, kind, representation, members
+        )
         self.vectors[node_id] = vector
         if members:
             self.member_vectors[node_id] = np.asarray(
@@ -82,21 +94,27 @@ class ActiveGraph:
         self._refresh_incremental_edges(segment_id)
 
     def add_memory(
-        self, memory_id: str, topic: str, member_representations: list[str] | None = None
+        self,
+        memory_id: str,
+        topic: str,
+        direct_member_representations: list[str] | None = None,
     ) -> None:
-        self.add_node(memory_id, "memory", topic, member_representations)
+        self.add_node(memory_id, "memory", topic, direct_member_representations)
         self._refresh_incremental_edges(memory_id)
 
     def update_memory_topic(
-        self, memory_id: str, topic: str, member_representations: list[str] | None = None
+        self,
+        memory_id: str,
+        topic: str,
+        direct_member_representations: list[str] | None = None,
     ) -> None:
         node = self.nodes.get(memory_id)
         if node is None or node.kind != "memory":
             raise KeyError(f"unknown memory graph node: {memory_id}")
         members = (
-            node.member_representations
-            if member_representations is None
-            else member_representations
+            node.direct_member_representations
+            if direct_member_representations is None
+            else direct_member_representations
         )
         self.add_memory(memory_id, topic, members)
 
@@ -302,7 +320,12 @@ class ActiveGraph:
                 str(row["node_id"]),
                 row["kind"],
                 str(row["representation"]),
-                list(row.get("member_representations", [])),
+                list(
+                    row.get(
+                        "direct_member_representations",
+                        row.get("member_representations", []),
+                    )
+                ),
             )
         self.rebuild_edges()
 
@@ -360,19 +383,21 @@ class LayeredActiveGraph:
         level: int,
         memory_id: str,
         topic: str,
-        member_representations: list[str] | None = None,
+        direct_member_representations: list[str] | None = None,
     ) -> None:
-        self.graph(level).add_memory(memory_id, topic, member_representations)
+        self.graph(level).add_memory(
+            memory_id, topic, direct_member_representations
+        )
 
     def update_memory_topic(
         self,
         level: int,
         memory_id: str,
         topic: str,
-        member_representations: list[str] | None = None,
+        direct_member_representations: list[str] | None = None,
     ) -> None:
         self.graph(level).update_memory_topic(
-            memory_id, topic, member_representations
+            memory_id, topic, direct_member_representations
         )
 
     def remove_nodes(

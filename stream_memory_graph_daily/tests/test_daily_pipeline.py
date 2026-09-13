@@ -575,6 +575,39 @@ class DailyPipelineTests(unittest.TestCase):
             ["coffee purchase"],
         )
 
+    def test_graph_uses_direct_members_before_full_raw_provenance(self) -> None:
+        pipeline = DailyMemoryGraph(
+            encoder=VectorEncoder(self.vectors), config=self.config
+        )
+        raw_segment = SegmentRecord(
+            "raw-segment",
+            "Raw historical evidence.",
+            "raw historical anchor",
+            "2025-06-01",
+        )
+        memory = MemoryRecord(
+            memory_id="l2-memory",
+            topic="Deployment workflow",
+            summary="A higher-level deployment topic.",
+            source_segments=[raw_segment.segment_id],
+            source_anchors=[raw_segment.anchor],
+            level=2,
+            direct_members=[
+                {
+                    "node_id": "l1-memory",
+                    "level": 1,
+                    "kind": "memory",
+                    "representation": "deployment rollback",
+                }
+            ],
+        )
+        pipeline.segments[raw_segment.segment_id] = raw_segment
+
+        self.assertEqual(
+            pipeline._memory_direct_representations(memory),
+            ["deployment rollback"],
+        )
+
     def test_retrieval_fuses_structured_fields_and_entity_channel(self) -> None:
         pipeline = DailyMemoryGraph(
             encoder=RetrievalEncoder(),
