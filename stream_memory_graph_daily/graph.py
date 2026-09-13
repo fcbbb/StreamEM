@@ -305,3 +305,151 @@ class ActiveGraph:
                 list(row.get("member_representations", [])),
             )
         self.rebuild_edges()
+
+
+class LayeredActiveGraph:
+    """Collection of independent :class:`ActiveGraph` instances by level.
+
+    A node may intentionally occur in two adjacent graphs.  For example, an
+    L1 memory is an upper-layer candidate in G0 and a current-layer node in
+    G1.  The graphs therefore share the node ID namespace but never share
+    graph edges or community-detection state.
+    """
+
+    def __init__(
+        self,
+        encoder: Encoder,
+        config: DailyGraphConfig,
+        *,
+        max_level: int = 3,
+    ) -> None:
+        if isinstance(max_level, bool) or not isinstance(max_level, int):
+            raise ValueError("max_level must be an integer")
+        if max_level < 0:
+            raise ValueError("max_level must be non-negative")
+        self.encoder = encoder
+        self.config = config
+        self.max_level = max_level
+        self.graphs: dict[int, ActiveGraph] = {}
+
+    def _validate_level(self, level: int) -> int:
+        if isinstance(level, bool) or not isinstance(level, int):
+            raise ValueError("graph level must be an integer")
+        if not 0 <= level <= self.max_level:
+            raise ValueError(
+                f"graph level must be between 0 and {self.max_level}, got {level}"
+            )
+        return level
+
+    def graph(self, level: int) -> ActiveGraph:
+        """Return the graph for ``level``, creating an empty one on demand."""
+
+        level = self._validate_level(level)
+        if level not in self.graphs:
+            self.graphs[level] = ActiveGraph(self.encoder, self.config)
+        return self.graphs[level]
+
+    def levels(self) -> tuple[int, ...]:
+        return tuple(sorted(self.graphs))
+
+    def add_segment(self, level: int, segment_id: str, anchor: str) -> None:
+        self.graph(level).add_segment(segment_id, anchor)
+
+    def add_memory(
+        self,
+        level: int,
+        memory_id: str,
+        topic: str,
+        member_representations: list[str] | None = None,
+    ) -> None:
+        self.graph(level).add_memory(memory_id, topic, member_representations)
+
+    def update_memory_topic(
+        self,
+        level: int,
+        memory_id: str,
+        topic: str,
+        member_representations: list[str] | None = None,
+    ) -> None:
+        self.graph(level).update_memory_topic(
+            memory_id, topic, member_representations
+        )
+
+    def remove_nodes(
+        self,
+        node_ids: set[str] | list[str],
+        *,
+        levels: set[int] | list[int] | tuple[int, ...] | None = None,
+    ) -> None:
+        """Remove nodes from selected graphs, or from every graph by default."""
+
+        selected_levels = self.levels() if levels is None else tuple(
+            sorted({self._validate_level(level) for level in levels})
+        )
+        for level in selected_levels:
+            self.graphs[level].remove_nodes(node_ids)
+
+    def node_ids(self, level: int | None = None) -> set[str]:
+        if level is not None:
+            return set(self.graph(level).nodes)
+        return set().union(*(set(active.nodes) for active in self.graphs.values()))
+
+    def memory_ids(self, level: int | None = None) -> set[str]:
+        if level is not None:
+            return self.graph(level).memory_ids()
+        return set().union(
+            *(active.memory_ids() for active in self.graphs.values())
+        )
+
+    def segment_ids(self, level: int | None = None) -> set[str]:
+        if level is not None:
+            return self.graph(level).segment_ids()
+        return set().union(
+            *(active.segment_ids() for active in self.graphs.values())
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "max_level": self.max_level,
+            "graphs": {
+                str(level): active.to_dict()
+                for level, active in sorted(self.graphs.items())
+            },
+        }
+
+    def restore(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            raise ValueError("layered active graph payload must be an object")
+        graph_rows = payload.get("graphs", {})
+        if not isinstance(graph_rows, dict):
+            raise ValueError("layered active graph graphs must be an object")
+
+        restored: dict[int, ActiveGraph] = {}
+        for raw_level, graph_payload in graph_rows.items():
+            try:
+                level = int(raw_level)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid graph level {raw_level!r}") from exc
+            self._validate_level(level)
+            if not isinstance(graph_payload, dict):
+                raise ValueError(f"graph payload for level {level} must be an object")
+            active = ActiveGraph(self.encoder, self.config)
+            active.restore_nodes(
+                graph_payload.get("nodes", []),
+                graph_payload.get("blocked_edges", []),
+            )
+            restored[level] = active
+        self.graphs = restored
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: dict[str, Any],
+        encoder: Encoder,
+        config: DailyGraphConfig,
+        *,
+        max_level: int = 3,
+    ) -> "LayeredActiveGraph":
+        instance = cls(encoder, config, max_level=max_level)
+        instance.restore(payload)
+        return instance

@@ -7,7 +7,7 @@ import numpy as np
 from stream_memory_graph_daily.config import DailyGraphConfig
 from stream_memory_graph_daily.anchoring import AnchorExtractor
 from stream_memory_graph_daily.cutting import ConversationCutter
-from stream_memory_graph_daily.graph import ActiveGraph
+from stream_memory_graph_daily.graph import ActiveGraph, LayeredActiveGraph
 from stream_memory_graph_daily.relations import MemoryRelation, MemoryRelationStore
 
 
@@ -192,6 +192,42 @@ class ComponentTests(unittest.TestCase):
         active.add_segment("s1", "segment topic")
         self.assertTrue(active.graph.has_edge("m1", "s1"))
         self.assertTrue(active.graph.has_edge("m2", "s1"))
+
+    def test_layered_graphs_are_isolated_and_support_global_removal(self) -> None:
+        encoder = VectorEncoder({
+            "memory topic": [1.0, 0.0],
+            "level zero segment": [1.0, 0.0],
+            "level one segment": [1.0, 0.0],
+        })
+        layered = LayeredActiveGraph(
+            encoder,
+            DailyGraphConfig(new_new_threshold=0.5, new_memory_threshold=0.5),
+        )
+
+        # An L1 memory can be represented in both adjacent boundary graphs.
+        layered.add_memory(0, "m1", "memory topic")
+        layered.add_segment(0, "s0", "level zero segment")
+        layered.add_memory(1, "m1", "memory topic")
+        layered.add_segment(1, "s1", "level one segment")
+
+        self.assertEqual(layered.levels(), (0, 1))
+        self.assertEqual(layered.memory_ids(), {"m1"})
+        self.assertEqual(layered.segment_ids(), {"s0", "s1"})
+        self.assertTrue(layered.graph(0).graph.has_edge("m1", "s0"))
+        self.assertTrue(layered.graph(1).graph.has_edge("m1", "s1"))
+        self.assertNotIn("s1", layered.graph(0).graph)
+        self.assertNotIn("s0", layered.graph(1).graph)
+
+        restored = LayeredActiveGraph.from_dict(
+            layered.to_dict(), encoder, layered.config
+        )
+        self.assertEqual(restored.levels(), (0, 1))
+        self.assertTrue(restored.graph(0).graph.has_edge("m1", "s0"))
+        self.assertTrue(restored.graph(1).graph.has_edge("m1", "s1"))
+
+        restored.remove_nodes({"m1"})
+        self.assertNotIn("m1", restored.graph(0).nodes)
+        self.assertNotIn("m1", restored.graph(1).nodes)
 
 
 if __name__ == "__main__":
