@@ -21,7 +21,7 @@ class DailyGraphConfig:
     retrieval_rrf_k: int = 60
     postprocess_workers: int = 1
     owner_candidate_top_k: int = 5
-    promotion_inactivity_days: tuple[int, ...] = (30, 90)
+    promotion_inactivity_days: tuple[int, ...] = (7, 30)
 
     def __post_init__(self) -> None:
         if self.knn_k < 1:

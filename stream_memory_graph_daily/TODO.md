@@ -51,20 +51,22 @@ L2：跨 L1 的较粗主题
 L3：更长期、更宽的主题结构
 ```
 
-为每个层级维护一个边界图：
+底层保留一个短期边界图，高层使用只包含本层 memory 的 peer graph：
 
 ```text
 G0 = L0 当前 segment + 尚未晋升的 L1 memory
-G1 = L1 当前 memory + 尚未晋升的 L2 memory
-G2 = L2 当前 memory + 尚未晋升的 L3 memory
+G1 = 当前 active L1 memory peer graph
+G2 = 当前 active L2 memory peer graph
+G3 = 当前 active L3 memory peer graph（为后续晋升预留）
 ```
+
+G0 中的 L1 是新事件快速吸收已有局部主题的稳定锚点；G1、G2、G3 的社区检测只处理对应层的 peer 边。跨层 owner 由独立 Router 决定，不通过跨层图边决定。
 
 每个图可以保留：
 
 - 当前层节点之间的边；
-- 当前层节点与上层活动 memory 之间的边；
-- 相邻 memory 层之间的 `cross_level` 候选边，但它们只用于 owner/wake 候选和审计；
-- 不建立跨越多个层级的边，也不把 `cross_level` 边交给社区检测；
+- G0 中当前层 segment 与 active L1 memory 之间的 boundary 边；
+- 不在 G1/G2/G3 中混入上一层或下一层 memory；
 - 不把 L0、L1、L2、L3 混在一张 Leiden 图中。
 
 高层替换低层时，低层 memory 从所有活动图中移除。例如 `L1-A → L2-B` 成功后，`L1-A` 不再出现在 `G0`、`G1` 或全局主题路由索引中；`L2-B` 成为该主题的唯一活动 owner。
@@ -238,16 +240,17 @@ L3 的直接成员表示：L2 memory representation
 
 ### 建议的实现顺序
 
-- [ ] 将 `ActiveGraph` 泛化为按层维护的多个边界图，或实现 `LayeredActiveGraph`。
-- [ ] 给 `MemoryRecord` 增加 `level`、`topic_lineage_id`、直接成员表示、owner 状态和晋升版本信息。
-- [ ] 将当前 `source_anchors` 的边计算逻辑推广为“直接下层表示”，避免高层每次递归扫描所有原始 segment。
+- [x] 将 `ActiveGraph` 泛化为按层维护的多个图：G0 保留 L0/L1 boundary，G1/G2/G3 只保留对应层 peer graph。
+- [ ] 给 `MemoryRecord` 增加 `topic_lineage_id`、owner 状态和晋升版本信息；当前已实现 `level`、直接成员表示和 `last_mentioned_at`。
+- [x] 将当前 `source_anchors` 的边计算逻辑推广为“直接下层表示”，避免高层每次递归扫描所有原始 segment。
 - [x] 实现全局 `TopicOwnerRouter`：索引所有活动 memory；跨层候选边可以保留在边界图中，但不参与社区检测，最终 owner 仍由固定 schema 的路由调用决定。
 - [ ] 实现 `OWNER / NEW_TOPIC / AMBIGUOUS / REJECTED` 路由结果及层级校准、margin 和冲突检查。
 - [x] 将 checkpoint 改为：L0 局部社区 → provisional L1 → owner routing → 快速融合或普通 L1 流程；正常晋升另由时间驱动调度器处理。
-- [ ] 快速路径失败时回退到普通 L1 路径，保证原始 segment 不丢失。
+- [x] 快速路径失败时回退到普通 L1 路径，保证原始 segment 不丢失。
 - [x] 暂不在 purification 中增加 owner 冲突输入；当前社区纯化规则足够，后续根据评测再决定。
 - [ ] 先使用全局统一语义阈值，并增加按层 edge density、degree、社区规模和误连率评测；仅在必要时再引入分层阈值校准。
 - [x] 保留现有 extraction/fusion 任务 Prompt，新增公共层级策略 Prompt；由 `target_level` 注入该层的职责、必须保留、可压缩、可丢弃和禁止推断信息类型，并在调用 payload 中保留同一份结构化策略。当前原始 segment extraction 固定生成 L1，L2+ 通过同层 owner fusion 使用对应策略。
 - [x] 抽取公共主题分组 Prompt；当前 purification 继续使用原有的 `memory_nodes`/`segment_nodes` 输入适配和结果校验，后续高层晋升只需替换节点输入适配器，不预先复制分层 Prompt。
 - [x] 实现基于会话逻辑时间和 `last_mentioned_at` 的一层晋升：过期单节点直接压缩，多个候选先做局部社区/主题分组；高层继承下层成员最新提及时间，低层记录保留但从活动图和 owner router 移除。
+- [x] 增加显式 `active_memory_ids`，将 active owner 状态从图节点布局中分离；状态恢复时兼容旧的图推断方式。
 - [ ] 增加高层主题回归、L1/L2 重复 owner 消除、不同 owner 的 L0 拆分、快速路径失败回退和多节点 L1→L2 社区晋升测试。

@@ -447,10 +447,12 @@ class ActiveGraph:
 class LayeredActiveGraph:
     """Collection of independent :class:`ActiveGraph` instances by level.
 
-    A node may intentionally occur in two adjacent graphs.  For example, an
-    L1 memory is an upper-layer candidate in G0 and a current-layer node in
-    G1.  The graphs therefore share the node ID namespace but never share
-    graph edges or community-detection state.
+    The pipeline uses graph 0 as a short-term boundary graph containing L0
+    segments and active L1 memories.  Higher graphs are same-level peer
+    graphs: G1 contains L1 peers, G2 contains L2 peers, and so on.  The class
+    still permits direct callers to build other boundary layouts for backward
+    compatibility, but cross-level ownership is not a community-graph
+    operation.
     """
 
     def __init__(

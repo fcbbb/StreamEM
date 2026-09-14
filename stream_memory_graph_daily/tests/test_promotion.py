@@ -25,6 +25,34 @@ class PromotionLLM:
 
 
 class PromotionTests(unittest.TestCase):
+    def test_pipeline_uses_same_level_graphs_and_persists_active_owners(self) -> None:
+        pipeline = DailyMemoryGraph()
+        memories = [
+            MemoryRecord("l1", "Local topic", "Local summary", level=1),
+            MemoryRecord("l2", "Broader topic", "Broader summary", level=2),
+            MemoryRecord("l3", "Long topic", "Long summary", level=3),
+        ]
+        for memory in memories:
+            pipeline.memories[memory.memory_id] = memory
+            pipeline._add_memory_to_layered_graphs(memory)
+
+        self.assertEqual(pipeline.active_memory_ids, {"l1", "l2", "l3"})
+        self.assertEqual(pipeline.layered_graph.graph(0).memory_ids(), {"l1"})
+        self.assertEqual(pipeline.layered_graph.graph(1).memory_ids(), {"l1"})
+        self.assertEqual(pipeline.layered_graph.graph(2).memory_ids(), {"l2"})
+        self.assertEqual(pipeline.layered_graph.graph(3).memory_ids(), {"l3"})
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = f"{directory}/state.json"
+            pipeline.save(path)
+            restored = DailyMemoryGraph.load(path)
+
+        self.assertEqual(restored.active_memory_ids, {"l1", "l2", "l3"})
+        self.assertEqual(restored.topic_owner_router.memory_ids(), {"l1", "l2", "l3"})
+        self.assertEqual(restored.layered_graph.graph(1).memory_ids(), {"l1"})
+        self.assertEqual(restored.layered_graph.graph(2).memory_ids(), {"l2"})
+        self.assertEqual(restored.layered_graph.graph(3).memory_ids(), {"l3"})
+
     def test_expired_singleton_promotes_one_level_and_inherits_mention_time(self) -> None:
         pipeline = DailyMemoryGraph(
             llm=PromotionLLM(),
@@ -71,6 +99,7 @@ class PromotionTests(unittest.TestCase):
         self.assertIn("old-l1", pipeline.memories)
         self.assertNotIn("old-l1", pipeline.layered_graph.memory_ids())
         self.assertIn(promoted.memory_id, pipeline.layered_graph.memory_ids())
+        self.assertEqual(pipeline.active_memory_ids, {promoted.memory_id})
         self.assertNotIn("old-l1", pipeline.topic_owner_router.memory_ids())
         self.assertIn(promoted.memory_id, pipeline.topic_owner_router.memory_ids())
 
@@ -81,6 +110,7 @@ class PromotionTests(unittest.TestCase):
             self.assertIn("old-l1", restored.memories)
             self.assertNotIn("old-l1", restored.layered_graph.memory_ids())
             self.assertIn(promoted.memory_id, restored.layered_graph.memory_ids())
+            self.assertEqual(restored.active_memory_ids, {promoted.memory_id})
         self.assertNotIn("old-l1", restored.topic_owner_router.memory_ids())
 
         next_result = pipeline.checkpoint(

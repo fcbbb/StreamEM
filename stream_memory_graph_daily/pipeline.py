@@ -82,6 +82,11 @@ class DailyMemoryGraph:
 
         self.segments: dict[str, SegmentRecord] = {}
         self.memories: dict[str, MemoryRecord] = {}
+        # Active ownership is durable state, not an accidental consequence of
+        # a memory being present in one of the community graphs.  A memory can
+        # remain in ``memories`` as historical provenance after it is replaced
+        # by a higher-level owner.
+        self.active_memory_ids: set[str] = set()
         self.boundaries: dict[str, BoundaryRecord] = {}
         self.skipped_segments: list[dict[str, Any]] = []
         self.pending_segment_ids: set[str] = set()
@@ -129,6 +134,7 @@ class DailyMemoryGraph:
             "memories": {
                 key: value.to_dict() for key, value in sorted(self.memories.items())
             },
+            "active_memory_ids": sorted(self.active_memory_ids),
             "boundaries": {
                 key: value.to_dict() for key, value in sorted(self.boundaries.items())
             },
@@ -439,15 +445,22 @@ class DailyMemoryGraph:
         return self._memory_direct_representations(memory)
 
     def _memory_graph_levels(self, memory: MemoryRecord) -> tuple[int, ...]:
-        """Return the adjacent boundary graphs containing an active memory."""
+        """Return graphs used by an active memory at its current level.
 
-        return tuple(
-            level
-            for level in (memory.level - 1, memory.level)
-            if 0 <= level <= self.layered_graph.max_level
-        )
+        G0 is the short-term boundary graph: active L1 memories are present
+        there so new L0 segments can attach to an existing local topic.  The
+        higher graphs are same-level peer graphs used for time-driven
+        promotion, so an Lk memory is stored only in Gk for k >= 2.
+        """
+
+        if memory.level == 1:
+            return (0, 1)
+        if 1 < memory.level <= self.layered_graph.max_level:
+            return (memory.level,)
+        return ()
 
     def _add_memory_to_layered_graphs(self, memory: MemoryRecord) -> None:
+        self.active_memory_ids.add(memory.memory_id)
         for level in self._memory_graph_levels(memory):
             self.layered_graph.add_memory(
                 level,
@@ -458,6 +471,7 @@ class DailyMemoryGraph:
             )
 
     def _update_memory_in_layered_graphs(self, memory: MemoryRecord) -> None:
+        self.active_memory_ids.add(memory.memory_id)
         for level in self._memory_graph_levels(memory):
             graph = self.layered_graph.graph(level)
             if memory.memory_id in graph.nodes:
@@ -482,7 +496,9 @@ class DailyMemoryGraph:
     ) -> None:
         if isinstance(memory_ids, str):
             memory_ids = {memory_ids}
-        self.layered_graph.remove_nodes(set(memory_ids))
+        memory_ids = set(memory_ids)
+        self.active_memory_ids.difference_update(memory_ids)
+        self.layered_graph.remove_nodes(memory_ids)
 
     def _run_purification_task(
         self,
@@ -1096,7 +1112,7 @@ class DailyMemoryGraph:
             self.promotion_scheduler.due_ids(
                 self.memories,
                 checkpoint_date,
-                active_ids=self.layered_graph.memory_ids(),
+                active_ids=self.active_memory_ids,
             )
         )
         if not self.pending_segment_ids and not force and not promotion_due:
@@ -1528,7 +1544,7 @@ class DailyMemoryGraph:
         semantic_owner_ids: list[str] = []
         lexical_documents: list[tuple[str, str]] = []
         entity_documents: dict[str, str] = {}
-        active_memory_ids = self.layered_graph.memory_ids()
+        active_memory_ids = self.active_memory_ids
         retrieval_nodes: list[tuple[str, str, list[str]]] = [
             (memory_id, "memory", memory_fields(memory))
             for memory_id, memory in sorted(self.memories.items())
@@ -1667,6 +1683,7 @@ class DailyMemoryGraph:
             "segments": len(self.segments),
             "segment_statuses": statuses,
             "memories": len(self.memories),
+            "active_memories": len(self.active_memory_ids),
             "active_nodes": len(self.active_graph.nodes),
             "active_edges": self.active_graph.graph.number_of_edges(),
             "boundaries": len(self.boundaries),
@@ -1685,6 +1702,7 @@ class DailyMemoryGraph:
             "config": self.config.to_dict(),
             "segments": {key: value.to_dict() for key, value in sorted(self.segments.items())},
             "memories": {key: value.to_dict() for key, value in sorted(self.memories.items())},
+            "active_memory_ids": sorted(self.active_memory_ids),
             "boundaries": {key: value.to_dict() for key, value in sorted(self.boundaries.items())},
             "skipped_segments": self.skipped_segments,
             "active_graph": self.active_graph.to_dict(),
@@ -1738,6 +1756,14 @@ class DailyMemoryGraph:
         instance.memories = {
             key: MemoryRecord.from_dict(value) for key, value in payload.get("memories", {}).items()
         }
+        raw_active_memory_ids = payload.get("active_memory_ids")
+        has_explicit_active_memory_ids = isinstance(raw_active_memory_ids, list)
+        if has_explicit_active_memory_ids:
+            instance.active_memory_ids = {
+                str(memory_id).strip()
+                for memory_id in raw_active_memory_ids
+                if str(memory_id).strip()
+            }
         instance.boundaries = {
             key: BoundaryRecord.from_dict(value)
             for key, value in payload.get("boundaries", {}).items()
@@ -1773,18 +1799,45 @@ class DailyMemoryGraph:
                 {"graphs": {"0": active_graph_payload}}
             )
             instance.active_graph = instance.layered_graph.graph(0)
-            for memory in instance.memories.values():
-                instance._update_memory_in_layered_graphs(memory)
-        active_memory_ids = instance.layered_graph.memory_ids()
-        unknown_active_memories = active_memory_ids - set(instance.memories)
+        # Pre-active-memory snapshots used graph membership as the active
+        # marker. Infer that marker once, then normalize all graph memberships
+        # to the current per-level layout before rebuilding derived indexes.
+        if not has_explicit_active_memory_ids:
+            instance.active_memory_ids = instance.layered_graph.memory_ids()
+
+        unknown_active_memories = instance.active_memory_ids - set(instance.memories)
         if unknown_active_memories:
             raise ValueError(
                 "active graph has unknown memories: "
                 f"{sorted(unknown_active_memories)}"
             )
+        for level in instance.layered_graph.levels():
+            graph = instance.layered_graph.graph(level)
+            stale_ids = graph.memory_ids() - instance.active_memory_ids
+            if stale_ids:
+                graph.remove_nodes(stale_ids)
+            misplaced_ids = {
+                memory_id
+                for memory_id in graph.memory_ids()
+                if level not in instance._memory_graph_levels(
+                    instance.memories[memory_id]
+                )
+            }
+            if misplaced_ids:
+                graph.remove_nodes(misplaced_ids)
+        for memory_id in sorted(instance.active_memory_ids):
+            instance._update_memory_in_layered_graphs(instance.memories[memory_id])
+
+        graph_active_memory_ids = instance.layered_graph.memory_ids()
+        missing_active_memories = instance.active_memory_ids - graph_active_memory_ids
+        if missing_active_memories:
+            raise ValueError(
+                "active memories are missing from the normalized graph: "
+                f"{sorted(missing_active_memories)}"
+            )
         instance.topic_owner_router.rebuild(
             instance.memories[memory_id]
-            for memory_id in sorted(active_memory_ids)
+            for memory_id in sorted(instance.active_memory_ids)
         )
         unknown_active_segments = instance.active_graph.segment_ids() - set(instance.segments)
         if unknown_active_segments:

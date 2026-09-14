@@ -250,8 +250,9 @@ class DailyPipelineTests(unittest.TestCase):
         self.assertNotIn("new-coffee", pipeline.active_graph.nodes)
         self.assertEqual(pipeline.memories["owner-l2"].level, 2)
         self.assertIn("new-coffee", pipeline.memories["owner-l2"].source_segments)
-        self.assertIn("owner-l2", pipeline.layered_graph.graph(1).nodes)
         self.assertIn("owner-l2", pipeline.layered_graph.graph(2).nodes)
+        self.assertNotIn("owner-l2", pipeline.layered_graph.graph(1).nodes)
+        self.assertEqual(pipeline.active_memory_ids, {"owner-l2"})
 
     def test_no_owner_keeps_provisional_l1_in_normal_layered_flow(self) -> None:
         pipeline = DailyMemoryGraph(
@@ -282,9 +283,11 @@ class DailyPipelineTests(unittest.TestCase):
         new_memory_id = next(iter(new_memory_ids))
         self.assertEqual(result["changes"][0]["action"], "memory_created")
         self.assertIn(new_memory_id, pipeline.layered_graph.graph(1).nodes)
-        self.assertTrue(
-            pipeline.layered_graph.graph(1).graph.has_edge(new_memory_id, "owner-l2")
+        self.assertNotIn("owner-l2", pipeline.layered_graph.graph(1).nodes)
+        self.assertEqual(
+            pipeline.layered_graph.graph(1).memory_ids(), {new_memory_id}
         )
+        self.assertEqual(pipeline.layered_graph.graph(2).memory_ids(), {"owner-l2"})
 
     def test_complete_conversation_path_cuts_anchors_and_extracts(self) -> None:
         llm = MemoryFakeLLM()
@@ -429,7 +432,7 @@ class DailyPipelineTests(unittest.TestCase):
         )
         existing = MemoryRecord("m-existing", "Coffee spending", "Existing coffee memory")
         pipeline.memories = {existing.memory_id: existing}
-        pipeline.active_graph.add_memory(existing.memory_id, existing.topic)
+        pipeline._add_memory_to_layered_graphs(existing)
 
         class FixedPlanner:
             def plan(self, active: Any, focus_node_ids: set[str] | None = None) -> CommunityPlan:
@@ -478,8 +481,8 @@ class DailyPipelineTests(unittest.TestCase):
         memory_a = MemoryRecord("m-a", "topic a", "A summary")
         memory_b = MemoryRecord("m-b", "topic b", "B summary")
         pipeline.memories = {"m-a": memory_a, "m-b": memory_b}
-        pipeline.active_graph.add_memory("m-a", "topic a")
-        pipeline.active_graph.add_memory("m-b", "topic b")
+        pipeline._add_memory_to_layered_graphs(memory_a)
+        pipeline._add_memory_to_layered_graphs(memory_b)
         pipeline.ingest_segment(
             SegmentRecord("bridge", "It connects A and B.", "ambiguous bridge", "2025-06-03")
         )
@@ -620,8 +623,8 @@ class DailyPipelineTests(unittest.TestCase):
             "m-b": MemoryRecord("m-b", "topic b", "summary b"),
         }
         pipeline.memories = memories
-        pipeline.active_graph.add_memory("m-a", "topic a")
-        pipeline.active_graph.add_memory("m-b", "topic b")
+        pipeline._add_memory_to_layered_graphs(memories["m-a"])
+        pipeline._add_memory_to_layered_graphs(memories["m-b"])
         pipeline.ingest_segment(SegmentRecord("s-a", "A", "topic a", "2025-06-01"))
         pipeline.ingest_segment(SegmentRecord("s-b", "B", "topic b", "2025-06-01"))
 
@@ -734,8 +737,8 @@ class DailyPipelineTests(unittest.TestCase):
             ],
         )
         pipeline.memories = {bridge.memory_id: bridge, paper.memory_id: paper}
-        pipeline.active_graph.add_memory(bridge.memory_id, bridge.topic)
-        pipeline.active_graph.add_memory(paper.memory_id, paper.topic)
+        pipeline._add_memory_to_layered_graphs(bridge)
+        pipeline._add_memory_to_layered_graphs(paper)
 
         bridge_results = pipeline.retrieve("What do I think of The Bridge on the River Kwai?", 1)
         paper_results = pipeline.retrieve("Write research paper draft", 1)
@@ -777,7 +780,7 @@ class DailyPipelineTests(unittest.TestCase):
             first_seen_date=boundary.event_date,
             last_checked_date=boundary.event_date,
         )
-        pipeline.active_graph.add_memory(memory.memory_id, memory.topic)
+        pipeline._add_memory_to_layered_graphs(memory)
         pipeline.active_graph.add_segment(active.segment_id, active.anchor)
         pipeline.active_graph.add_segment(boundary.segment_id, boundary.anchor)
 

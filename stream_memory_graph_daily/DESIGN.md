@@ -40,17 +40,39 @@ support_strength
 
 社区成功压缩后，原始证据仍保存在 `SegmentRecord` 以及 memory 的来源字段中，但不再作为活动图节点参与下一轮社区检测。
 
+### 短期工作区与长期整理区
+
+G0 是在线短期工作区，不只是一个普通的同层社区图。它同时包含当前
+L0 segment 和 active L1 memory：L0 segment 之间进行局部社区检测，L0 与
+L1 之间的 boundary 边则让新事件能够快速吸收到已有的局部主题。L1 在这里
+作为持续的局部主题锚点，避免只根据当前批次的少量 segment 生成不稳定的新主题。
+
+G1、G2 等高层图承担长期记忆的整理和晋升，不需要混入上一层 memory。当前
+管线使用以下图布局：
+
+```text
+G0：L0 segment + active L1 memory，短期吸收和普通 L1 更新
+G1：active L1 memory peer graph，L1 → L2 的同层社区检测
+G2：active L2 memory peer graph，L2 → L3 的同层社区检测
+G3：active L3 memory peer graph，预留给后续更高层晋升
+```
+
+因此，社区检测始终只读取本层 peer 边。G0 中的 L1 不是为了参加 L0 的
+同层聚类，而是作为已有主题的实时归属入口；这正是底层和高层职责不对称
+的原因。高层跨层 owner 判断由 `TopicOwnerRouter` 完成，不依赖 G1/G2
+中的跨层图边或图连通性。
+
 ## 分层图的边语义
 
 分层图中的“相似”只表示候选关系，不表示所有节点都应该参加同一种社区运算。系统区分三类边：
 
 - `peer`：同层节点之间的相似边，用于同层社区检测、主题整合和逐层晋升；
 - `boundary`：L0 segment 与活动 L1 memory 之间的边，用于新事件实时吸收到已有局部主题；
-- `cross_level`：相邻层 memory 之间的相似边，用于 owner/wake 候选和审计，不用于把不同层级的节点放入同一个社区。
+- `cross_level`：如果旧状态或底层图 API 中存在相邻层 memory 候选边，只能作为兼容性/审计信息，不能把不同层级的节点放入同一个社区；当前管线的跨层 owner 判断由独立 Router 完成。
 
-因此，G0 保留 L0↔L1 的边，因为新事件必须能够找到已有 L1 的普通更新入口；G1、G2 等高层边界图可以保留 L1↔L2、L2↔L3 的候选边，但社区检测只读取当前层的 peer 边。跨层 owner 的最终判断仍由 `TopicOwnerRouter` 和固定 JSON schema 完成，不能由 raw score、图连通性或跨层路径直接决定。
+因此，G0 保留 L0↔L1 的 boundary 边，因为新事件必须能够找到已有 L1 的普通更新入口；G1、G2、G3 只保存对应层的 memory peer 边。跨层 owner 的最终判断仍由 `TopicOwnerRouter` 和固定 JSON schema 完成，不能由 raw score、图连通性或跨层路径直接决定。
 
-这样可以避免 `L1-A ↔ L2 ↔ L1-B` 的传递连接把两个本来不同的 L1 主题错误合并，同时保留跨层关系作为后续归属判断和唤醒信号。相似度阈值在各层复用同一全局标准；不同层的不同含义来自表示粒度和边的生命周期职责，而不是人为设置不同阈值。
+这样可以避免 `L1-A ↔ L2 ↔ L1-B` 的传递连接把两个本来不同的 L1 主题错误合并。相似度阈值在各层复用同一全局标准；不同层的不同含义来自表示粒度和边的生命周期职责，而不是人为设置不同阈值。
 
 ## 多 memory 社区的分配
 
@@ -112,6 +134,7 @@ support_strength
 
 - 所有原始 segment 及其处理状态；
 - 所有结构化 memory；
+- `active_memory_ids`：当前有效主题 owner 的显式集合；低层 memory 被高层替换后仍保留在 memory store，但从该集合移除；
 - 当前活动图节点和边；
 - boundary 及其候选 memory 得分；
 - pending segment；
@@ -119,7 +142,18 @@ support_strength
 - checkpoint 和 LLM 错误记录；
 - 预留的 memory 关系存储。
 
-恢复状态时，系统根据活动 segment anchor、memory topic 以及 memory 的历史来源 anchor 重新生成向量并重建超节点边，同时检查 memory 记录与活动 memory 节点是否一致。旧状态中没有超节点成员表示时，会从 `MemoryRecord.source_anchors` 自动补齐。
+恢复状态时，系统先恢复 `active_memory_ids`，再按当前层布局规范化活动图：G0 保留 active L1 boundary 节点，G1/G2/G3 分别只保留对应层的 peer 节点。旧状态没有 `active_memory_ids` 时，先从旧活动图节点推断一次。随后根据活动 segment anchor、memory topic 以及 memory 的直接成员表示重新生成向量并重建边，同时检查 memory 记录与活动 memory 节点是否一致。旧状态中没有超节点成员表示时，会从 `MemoryRecord.source_anchors` 自动补齐。
+
+`active_memory_ids` 将“历史上是否保存过 memory”“当前是否是有效 owner”和“是否需要参加某张社区图”分开。图只负责组织和晋升，memory store 负责保存历史，Router 和检索都以该集合为 active 来源。
+
+## 检索与回答
+
+问题检索默认只查询两类 active 节点：
+
+- `active_memory_ids` 对应的所有层级 memory，使用 topic、summary、结构化内容和来源 anchor；
+- G0 中仍未压缩的 active segment，使用 anchor 和原文。
+
+检索将语义相似度、BM25 词法匹配和实体匹配通过 RRF 合并，返回 top-k。它不沿社区图做路径遍历，也不直接查询已经从 active 集合移除的低层 memory 或已经压缩的原始 segment。回答 LLM 只接收检索得到的 memory 结构化内容和 active segment 内容，并被要求仅依据这些内容回答。原始 segment 和历史低层 memory 仍在状态文件中保存，后续如需恢复被高层压缩掉的细节，再增加独立的历史证据 fallback retrieval。
 
 ## 记忆关系预留
 
@@ -129,3 +163,17 @@ support_strength
 - 运行时可以保留相邻层 memory 的 `cross_level` 候选边，但不把它们当作 memory-memory peer 关系；
 - 同层 memory-memory peer 边只在对应层的社区视图中参与检测；
 - owner 归属仍由独立路由器决定，不由关系存储或图连通性直接决定。
+
+
+
+
+
+L0 segment
+  → L0 社区检测与纯化
+  → 形成 provisional L1
+  → 召回最多 5 个 active L2/L3 owner 候选
+      → LLM 确认唯一 owner：快速融合到该 L2/L3
+      → 无候选/不唯一/不确定/融合失败：走普通 L1 创建或融合
+  → 后续 checkpoint 按 last_mentioned_at 独立检查时间晋升
+      → L1 → L2
+      → L2 → L3
