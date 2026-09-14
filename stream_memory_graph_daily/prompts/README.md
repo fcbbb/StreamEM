@@ -16,6 +16,7 @@
 - `cutting.txt`：由切割模块追加 semantic units；
 - `anchor_extraction.txt`：由锚点模块一次追加同一切割窗口产生的全部 segment；模型必须按 `segment_id` 原序返回一项一锚点，调用方会拒绝缺失、重复或虚构 ID；
 - `memory_extraction.txt`：由记忆模块追加纯化后的单主题社区；
+- `memory_extraction_from_memories.txt`：由时间驱动晋升模块追加一个或多个直接下层 memory 的语义内容，生成目标层级的压缩表示；
 - `memory_fusion.txt`：由记忆模块追加完整的 existing memory 和新 segment group。
 - `community_purification.txt`：由 checkpoint 阶段追加一个已按最高 memory 相似度分配好的 community group；输入包含至多一个已有 memory 节点和新 segment 节点，模型可以返回一个或多个 node group，并把不属于该 memory 的 segment 分到无 memory 的新主题 group。拆分得到的单 segment group 由调用方保留在 active graph，不再调用 extraction/fusion；拆分组之间的旧图边也会被切断。
 - `community_topic_partition.txt`：公共主题分组 Prompt；当前 purification 使用现有的 `memory_nodes`/`segment_nodes` 输入适配和校验，后续高层节点分组可以复用同一套主题一致性规则。

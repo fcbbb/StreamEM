@@ -37,7 +37,7 @@
 2. 一个主题在活动系统中只有一个当前表示，即一个 `topic lineage` 只有一个 active owner。
 3. 高层 memory 晋升后，全局替换低层 memory：低层节点从所有活动图和唤醒索引中移除；原始证据和来源关系是否保留由独立的 retention/forgetting 策略决定。
 4. 原始 segment 仍然先进入 L0 的局部构建；高层快速路径使用的是由 L0 社区形成的临时 L1 表示，不把原始 segment 直接放进高层社区图。
-5. 社区检测图不混合任意层级。第 `k` 层只处理第 `k` 层当前节点和第 `k+1` 层活动摘要；跨层候选匹配使用独立的主题归属路由器，不产生 Leiden 图边。
+5. 社区检测图不混合任意层级。边界图可以保留相邻层的候选边，但第 `k` 层社区检测只处理第 `k` 层 peer 边；跨层归属使用独立的主题归属路由器，不把跨层边当作 Leiden 社区边。
 6. 正常压缩逐层进行；快速路径允许临时 L1 直接融合到已经存在的 L2/L3 owner，但不是让原始 L0 直接越级写入高层。
 
 ### 层级和活动图
@@ -59,11 +59,12 @@ G1 = L1 当前 memory + 尚未晋升的 L2 memory
 G2 = L2 当前 memory + 尚未晋升的 L3 memory
 ```
 
-每个图只建立：
+每个图可以保留：
 
 - 当前层节点之间的边；
 - 当前层节点与上层活动 memory 之间的边；
-- 不建立跨越多个层级的社区边；
+- 相邻 memory 层之间的 `cross_level` 候选边，但它们只用于 owner/wake 候选和审计；
+- 不建立跨越多个层级的边，也不把 `cross_level` 边交给社区检测；
 - 不把 L0、L1、L2、L3 混在一张 Leiden 图中。
 
 高层替换低层时，低层 memory 从所有活动图中移除。例如 `L1-A → L2-B` 成功后，`L1-A` 不再出现在 `G0`、`G1` 或全局主题路由索引中；`L2-B` 成为该主题的唯一活动 owner。
@@ -174,14 +175,14 @@ L0-C       → L2-Y
 
 然后对 L2→L3 重复同样过程。
 
-初版不引入抽象的 stability 分数。是否允许正常晋升先使用可观测条件：
+初版不引入抽象的 stability 分数，而以会话逻辑时间作为主要触发条件：
 
-- memory 是否达到该层的最小证据量或时间跨度；
-- 是否形成跨多个 checkpoint/event_date 的同层社区；
-- 是否存在 Boundary 或未解决冲突；
-- fusion 是否能产生明确的共同主题。
+- `last_mentioned_at` 距 checkpoint 会话日期达到当前层的不活跃窗口；
+- 活跃下层节点会作为主题上下文参与纯化，不能仅凭一条图边刷新过期节点；
+- 多个候选先做局部社区检测和公共主题分组，孤立过期节点直接压缩；
+- 生成的高层 memory 继承下层成员的最新 `last_mentioned_at`，每次只上移一层。
 
-这些条件应作为层级策略配置，后续再根据评测结果调整，不直接用单一“稳定性分数”决定。
+当前默认窗口为 L1=30 天、L2=90 天，作为可调配置而不是最终理论结论。
 
 ### 层级粗细与建图参数
 
@@ -240,12 +241,13 @@ L3 的直接成员表示：L2 memory representation
 - [ ] 将 `ActiveGraph` 泛化为按层维护的多个边界图，或实现 `LayeredActiveGraph`。
 - [ ] 给 `MemoryRecord` 增加 `level`、`topic_lineage_id`、直接成员表示、owner 状态和晋升版本信息。
 - [ ] 将当前 `source_anchors` 的边计算逻辑推广为“直接下层表示”，避免高层每次递归扫描所有原始 segment。
-- [ ] 实现全局 `TopicOwnerRouter`：索引所有活动 memory，但不向社区图添加跨层边。
+- [x] 实现全局 `TopicOwnerRouter`：索引所有活动 memory；跨层候选边可以保留在边界图中，但不参与社区检测，最终 owner 仍由固定 schema 的路由调用决定。
 - [ ] 实现 `OWNER / NEW_TOPIC / AMBIGUOUS / REJECTED` 路由结果及层级校准、margin 和冲突检查。
-- [x] 将 checkpoint 改为：L0 局部社区 → provisional L1 → owner routing → 快速融合或普通 L1 流程；本阶段暂不实现 L1→L2、L2→L3 正常晋升。
+- [x] 将 checkpoint 改为：L0 局部社区 → provisional L1 → owner routing → 快速融合或普通 L1 流程；正常晋升另由时间驱动调度器处理。
 - [ ] 快速路径失败时回退到普通 L1 路径，保证原始 segment 不丢失。
 - [x] 暂不在 purification 中增加 owner 冲突输入；当前社区纯化规则足够，后续根据评测再决定。
 - [ ] 先使用全局统一语义阈值，并增加按层 edge density、degree、社区规模和误连率评测；仅在必要时再引入分层阈值校准。
 - [x] 保留现有 extraction/fusion 任务 Prompt，新增公共层级策略 Prompt；由 `target_level` 注入该层的职责、必须保留、可压缩、可丢弃和禁止推断信息类型，并在调用 payload 中保留同一份结构化策略。当前原始 segment extraction 固定生成 L1，L2+ 通过同层 owner fusion 使用对应策略。
 - [x] 抽取公共主题分组 Prompt；当前 purification 继续使用原有的 `memory_nodes`/`segment_nodes` 输入适配和结果校验，后续高层晋升只需替换节点输入适配器，不预先复制分层 Prompt。
-- [ ] 增加以下测试：高层主题回归、L1/L2 重复 owner 消除、不同 owner 的 L0 拆分、快速路径失败回退、L1→L2 全局替换、无 owner 的新主题逐层晋升。
+- [x] 实现基于会话逻辑时间和 `last_mentioned_at` 的一层晋升：过期单节点直接压缩，多个候选先做局部社区/主题分组；高层继承下层成员最新提及时间，低层记录保留但从活动图和 owner router 移除。
+- [ ] 增加高层主题回归、L1/L2 重复 owner 消除、不同 owner 的 L0 拆分、快速路径失败回退和多节点 L1→L2 社区晋升测试。

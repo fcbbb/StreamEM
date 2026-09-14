@@ -77,12 +77,21 @@ class ConstrainedCommunityPlanner:
         )
         return [{node_ids[index] for index in group} for group in partition]
 
+    def detect_nodes(
+        self, active: ActiveGraph, nodes: set[str] | None = None
+    ) -> list[set[str]]:
+        """Detect communities using only edges valid for this graph level."""
+
+        selected = set(active.graph.nodes) if nodes is None else set(nodes)
+        return self._detect(active.community_graph(selected), selected)
+
     def _new_groups(
         self, active: ActiveGraph, segment_ids: set[str], source: str
     ) -> list[PlannedCommunity]:
+        community_graph = active.community_graph(segment_ids)
         return [
             PlannedCommunity(stable_group_id(group), set(), group, source)
-            for group in self._detect(active.graph, segment_ids)
+            for group in self._detect(community_graph, segment_ids)
         ]
 
     def repair_multi_memory(
@@ -130,6 +139,7 @@ class ConstrainedCommunityPlanner:
     def plan(
         self, active: ActiveGraph, focus_node_ids: set[str] | None = None
     ) -> CommunityPlan:
+        community_graph = active.community_graph()
         boundaries: dict[str, dict[str, float]] = {}
         cannot_link: set[tuple[str, str]] = set()
         planned: list[PlannedCommunity] = []
@@ -141,14 +151,14 @@ class ConstrainedCommunityPlanner:
         # with more than one memory; repair_multi_memory assigns each one to
         # the most similar memory and returns one purification group per
         # memory that received a segment.
-        all_components = [set(group) for group in nx.connected_components(active.graph)]
+        all_components = [set(group) for group in nx.connected_components(community_graph)]
         if focus_node_ids is None:
             components = all_components
         else:
             focus = set(focus_node_ids) & set(active.graph.nodes)
             components = [group for group in all_components if group & focus]
         affected_node_ids = set().union(*components) if components else set()
-        detected = self._detect(active.graph, affected_node_ids)
+        detected = self._detect(community_graph, affected_node_ids)
         for component in components:
             memories = component & memory_nodes
             if len(memories) > 1:
@@ -160,7 +170,7 @@ class ConstrainedCommunityPlanner:
                 continue
             # With zero or one memory seed, ordinary Leiden can still split a
             # weakly connected component into independent new-topic groups.
-            for group in self._detect(active.graph, component):
+            for group in self._detect(community_graph, component):
                 group_memories = group & memory_nodes
                 segments = group & segment_nodes
                 if segments:

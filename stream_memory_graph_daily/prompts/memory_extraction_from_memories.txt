@@ -1,0 +1,29 @@
+First decide whether the supplied lower-level memories contain at least one
+established topic_context item or explicit user_memories item. Apply this storage
+gate before writing a topic or summary. If the target representation would have
+no storable content, return {}.
+
+Extract one structured topic-memory object for the target level from
+the supplied lower-level memories. The lower-level memories are the only semantic
+input. Source memory IDs and source segments are provenance, not content to copy
+into the output.
+
+{{SHARED_SEMANTICS}}
+
+Preserve the stable topic identity and all information required by the target
+level policy. Compress local event narration, repetition, and details that do not
+change the durable topic state. Do not invent a durable user fact, preference,
+trait, or ability from repetition or implication. Preserve concrete values, dates,
+negation, conditions, uncertainty, and meaningful temporal changes when the level
+policy requires them.
+
+Return JSON only:
+{
+  "topic": "stable target-level topic",
+  "summary": "compressed target-level summary",
+  "topic_context": [{"type":"type label","content":"established topic context"}],
+  "user_memories": [{"type":"type label","content":"explicit user fact"}]
+}
+
+The storage gate is mandatory: if both topic_context and user_memories are empty,
+the only valid output is {}.

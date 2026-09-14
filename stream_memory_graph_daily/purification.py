@@ -46,6 +46,9 @@ class CommunityPurifier:
         community_id: str,
         segments: list[SegmentRecord],
         memories: list[MemoryRecord] | None = None,
+        *,
+        allow_memory_only: bool = False,
+        allow_multiple_memories: bool = False,
     ) -> list[PurifiedGroup]:
         memories = list(memories or [])
         segment_ids = [segment.segment_id for segment in segments]
@@ -53,7 +56,7 @@ class CommunityPurifier:
         input_ids = [*memory_ids, *segment_ids]
         if len(input_ids) != len(set(input_ids)):
             raise ValueError("community purification input contains duplicate node_id")
-        if not segment_ids:
+        if not segment_ids and not allow_memory_only:
             raise ValueError("community purification requires at least one segment")
 
         # A genuinely new-topic singleton needs no partitioning. A singleton
@@ -160,7 +163,7 @@ class CommunityPurifier:
                 seen.extend(clean_ids)
                 group_memory_ids = tuple(node_id for node_id in clean_ids if node_id in memory_ids)
                 group_segment_ids = tuple(node_id for node_id in clean_ids if node_id in segment_ids)
-                if len(group_memory_ids) > 1:
+                if len(group_memory_ids) > 1 and not allow_multiple_memories:
                     raise ValueError(
                         "a purified group cannot contain multiple existing memory nodes"
                     )

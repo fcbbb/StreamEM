@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 import networkx as nx
 import numpy as np
@@ -19,6 +19,9 @@ class ActiveNode:
     kind: NodeKind
     representation: str
     direct_member_representations: list[str] = field(default_factory=list)
+    # Persisted so boundary graphs can distinguish peer and cross-level
+    # memory edges after state restoration.
+    memory_level: int | None = None
 
     @property
     def member_representations(self) -> list[str]:
@@ -43,10 +46,12 @@ class ActiveGraph:
         config: DailyGraphConfig,
         *,
         allow_memory_memory_edges: bool = False,
+        community_level: int | None = None,
     ) -> None:
         self.encoder = encoder
         self.config = config
         self.allow_memory_memory_edges = allow_memory_memory_edges
+        self.community_level = community_level
         self.nodes: dict[str, ActiveNode] = {}
         self.vectors: dict[str, np.ndarray] = {}
         self.member_vectors: dict[str, np.ndarray] = {}
@@ -65,6 +70,7 @@ class ActiveGraph:
         kind: NodeKind,
         representation: str,
         direct_member_representations: list[str] | None = None,
+        memory_level: int | None = None,
     ) -> None:
         node_id = str(node_id).strip()
         representation = str(representation).strip()
@@ -82,9 +88,16 @@ class ActiveGraph:
         ]
         if kind == "segment" and members:
             raise ValueError("segment nodes cannot have member representations")
+        if kind == "memory" and memory_level is not None:
+            if isinstance(memory_level, bool) or not isinstance(memory_level, int):
+                raise ValueError("memory_level must be an integer")
+            if memory_level < 1:
+                raise ValueError("memory_level must be positive")
+        if kind == "segment":
+            memory_level = None
         vector = unit_vector(self.encoder.encode([representation])[0])
         self.nodes[node_id] = ActiveNode(
-            node_id, kind, representation, members
+            node_id, kind, representation, members, memory_level
         )
         self.vectors[node_id] = vector
         if members:
@@ -105,8 +118,15 @@ class ActiveGraph:
         memory_id: str,
         topic: str,
         direct_member_representations: list[str] | None = None,
+        memory_level: int | None = None,
     ) -> None:
-        self.add_node(memory_id, "memory", topic, direct_member_representations)
+        self.add_node(
+            memory_id,
+            "memory",
+            topic,
+            direct_member_representations,
+            memory_level,
+        )
         self._refresh_incremental_edges(memory_id)
 
     def update_memory_topic(
@@ -114,6 +134,7 @@ class ActiveGraph:
         memory_id: str,
         topic: str,
         direct_member_representations: list[str] | None = None,
+        memory_level: int | None = None,
     ) -> None:
         node = self.nodes.get(memory_id)
         if node is None or node.kind != "memory":
@@ -123,7 +144,9 @@ class ActiveGraph:
             if direct_member_representations is None
             else direct_member_representations
         )
-        self.add_memory(memory_id, topic, members)
+        if memory_level is None:
+            memory_level = node.memory_level
+        self.add_memory(memory_id, topic, members, memory_level)
 
     def remove_nodes(self, node_ids: set[str] | list[str]) -> None:
         removed = set(node_ids)
@@ -218,12 +241,72 @@ class ActiveGraph:
             return self.config.new_new_threshold
         return self.config.new_memory_threshold
 
+    def edge_relation(self, left: str, right: str) -> str:
+        """Classify an edge by its lifecycle role.
+
+        ``boundary`` attaches lower-level evidence to an upper memory,
+        ``peer`` is eligible for same-level community detection, and
+        ``cross_level`` is retained only as candidate/wake evidence.
+        """
+
+        left_kind = self.node_kind(left)
+        right_kind = self.node_kind(right)
+        if left_kind == right_kind == "segment":
+            return "peer"
+        if left_kind == right_kind == "memory":
+            left_level = self.nodes[left].memory_level
+            right_level = self.nodes[right].memory_level
+            if (
+                left_level is not None
+                and right_level is not None
+                and left_level != right_level
+            ):
+                return "cross_level"
+            return "peer"
+        return "boundary"
+
+    def is_community_edge(self, left: str, right: str) -> bool:
+        """Return whether an edge can influence community detection."""
+
+        relation = self.edge_relation(left, right)
+        if relation == "cross_level":
+            return False
+        if self.community_level is None:
+            return True
+        if self.community_level == 0:
+            # G0 is the realtime attachment graph: L0 peers and L0↔L1
+            # boundary edges are both intentionally visible to planning.
+            return True
+        left_node = self.nodes[left]
+        right_node = self.nodes[right]
+        return (
+            left_node.kind == right_node.kind == "memory"
+            and left_node.memory_level == self.community_level
+            and right_node.memory_level == self.community_level
+        )
+
+    def community_graph(self, nodes: set[str] | None = None) -> nx.Graph:
+        """Return a graph view containing only community-valid edges."""
+
+        selected = set(self.graph.nodes) if nodes is None else set(nodes)
+        selected &= set(self.graph.nodes)
+        view = self.graph.subgraph(selected).copy()
+        view.remove_edges_from(
+            [
+                (left, right)
+                for left, right in view.edges
+                if not self.is_community_edge(left, right)
+            ]
+        )
+        return view
+
     def _incremental_candidates(self, node_id: str) -> list[tuple[float, str]]:
         """Return this node's current thresholded top-k eligible neighbours.
 
         New segment nodes consider all currently active segments and memories.
-        New or updated memory nodes consider only currently active segments;
-        memory-memory edges are never candidates.
+        Boundary graphs that allow memory-memory edges also retain same-level
+        peer and adjacent-level cross-level candidates; community views later
+        decide which of those relations may affect clustering.
         """
 
         node_kind = self.node_kind(node_id)
@@ -264,7 +347,12 @@ class ActiveGraph:
         for other_id in list(self.graph.neighbors(node_id)):
             self.graph.remove_edge(node_id, other_id)
         for score, other_id in self._incremental_candidates(node_id):
-            self.graph.add_edge(node_id, other_id, weight=score)
+            self.graph.add_edge(
+                node_id,
+                other_id,
+                weight=score,
+                relation=self.edge_relation(node_id, other_id),
+            )
 
     def rebuild_edges(self) -> None:
         """Rebuild the global symmetric kNN graph for state restoration."""
@@ -296,12 +384,22 @@ class ActiveGraph:
             for _, other in rows[: self.config.knn_k]:
                 selected.add(tuple(sorted((node_id, other))))
         for left, right in sorted(selected):
-            graph.add_edge(left, right, weight=pair_scores[(left, right)])
+            graph.add_edge(
+                left,
+                right,
+                weight=pair_scores[(left, right)],
+                relation=self.edge_relation(left, right),
+            )
         self.graph = graph
 
     def edge_rows(self) -> list[dict[str, Any]]:
         return [
-            {"left": left, "right": right, "weight": float(data["weight"])}
+            {
+                "left": left,
+                "right": right,
+                "weight": float(data["weight"]),
+                "relation": data.get("relation", self.edge_relation(left, right)),
+            }
             for left, right, data in sorted(self.graph.edges(data=True))
         ]
 
@@ -341,6 +439,7 @@ class ActiveGraph:
                         row.get("member_representations", []),
                     )
                 ),
+                row.get("memory_level"),
             )
         self.rebuild_edges()
 
@@ -388,6 +487,7 @@ class LayeredActiveGraph:
                 self.encoder,
                 self.config,
                 allow_memory_memory_edges=level > 0,
+                community_level=level,
             )
         return self.graphs[level]
 
@@ -403,9 +503,14 @@ class LayeredActiveGraph:
         memory_id: str,
         topic: str,
         direct_member_representations: list[str] | None = None,
+        memory_level: int | None = None,
     ) -> None:
+        if memory_level is None:
+            # Backward-compatible direct callers: G0 contains L1 boundary
+            # memories, while higher Gk defaults to current-level Lk.
+            memory_level = max(1, level)
         self.graph(level).add_memory(
-            memory_id, topic, direct_member_representations
+            memory_id, topic, direct_member_representations, memory_level
         )
 
     def update_memory_topic(
@@ -414,10 +519,32 @@ class LayeredActiveGraph:
         memory_id: str,
         topic: str,
         direct_member_representations: list[str] | None = None,
+        memory_level: int | None = None,
     ) -> None:
         self.graph(level).update_memory_topic(
-            memory_id, topic, direct_member_representations
+            memory_id, topic, direct_member_representations, memory_level
         )
+
+    def community_graph(
+        self, level: int, nodes: set[str] | None = None
+    ) -> nx.Graph:
+        """Return the level-aware community view for a boundary graph."""
+
+        return self.graph(level).community_graph(nodes)
+
+    def annotate_memory_levels(self, levels: Mapping[str, int]) -> None:
+        """Restore level metadata for snapshots created before layered edges."""
+
+        changed = False
+        for active in self.graphs.values():
+            for node_id, node in active.nodes.items():
+                if node.kind != "memory" or node_id not in levels:
+                    continue
+                node.memory_level = int(levels[node_id])
+                changed = True
+        if changed:
+            for active in self.graphs.values():
+                active.rebuild_edges()
 
     def remove_nodes(
         self,
@@ -481,6 +608,7 @@ class LayeredActiveGraph:
                 self.encoder,
                 self.config,
                 allow_memory_memory_edges=level > 0,
+                community_level=level,
             )
             active.restore_nodes(
                 graph_payload.get("nodes", []),

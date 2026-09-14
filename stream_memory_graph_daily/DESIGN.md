@@ -17,7 +17,7 @@ checkpoint 内部先串行完成社区检测，再并发执行相互独立的社
 - `segment`：使用提取出的语义 anchor 作为图表示；
 - `memory`：以结构化记忆的 `topic` 为主表示，并保存已压缩成员的历史 anchor 作为简化超节点成员表示。
 
-图存储为无向图，但采用在线增量 kNN：新 `segment` 到达时，只计算它与当前活动 `segment`/`memory` 的相似度，并保留其阈值化 top-k 邻居；新建或更新 `memory` 时，只计算它与当前活动 `segment` 的相似度。已有节点不会因为新节点到达而重新筛选 top-k。状态恢复时才使用全量重建来从快照节点恢复边。系统分别配置 `segment-segment` 和 `segment-memory` 的相似度阈值，并直接跳过所有 `memory-memory` 节点对。
+图存储为无向图，但采用在线增量 kNN：新 `segment` 到达时，只计算它与当前活动 `segment`/`memory` 的相似度，并保留其阈值化 top-k 邻居；新建或更新 `memory` 时，只计算它与当前活动节点的相似度。已有节点不会因为新节点到达而重新筛选 top-k。状态恢复时才使用全量重建来从快照节点恢复边。相似度阈值仍由全局配置统一控制；边是否参与社区检测则由节点层级和边语义决定。
 
 memory 超节点与活动 segment 的边权定义为：
 
@@ -36,9 +36,21 @@ support_strength
   = 达到阈值的历史成员相似度平均值
 ```
 
-`memory.topic` 是 memory 的稳定语义身份，历史成员 anchor 只能作为共识支持，不能替换 topic 作为 base。成员按 `source_segments` 一一取回 anchor 并分别计票，即使多个 segment 的 anchor 文本相同也不会被去重。成员共识计算复用现有 `new_memory_threshold`，不引入额外超参数。当前仍是一层图：历史成员不恢复为活动节点，聚合计算只形成一条 `memory-segment` 边。
+`memory.topic` 是 memory 的稳定语义身份，历史成员 anchor 只能作为共识支持，不能替换 topic 作为 base。成员按 `source_segments` 一一取回 anchor 并分别计票，即使多个 segment 的 anchor 文本相同也不会被去重。成员共识计算复用现有 `new_memory_threshold`，不引入额外超参数。历史成员不恢复为活动节点，聚合计算只形成当前活动节点之间的边。
 
 社区成功压缩后，原始证据仍保存在 `SegmentRecord` 以及 memory 的来源字段中，但不再作为活动图节点参与下一轮社区检测。
+
+## 分层图的边语义
+
+分层图中的“相似”只表示候选关系，不表示所有节点都应该参加同一种社区运算。系统区分三类边：
+
+- `peer`：同层节点之间的相似边，用于同层社区检测、主题整合和逐层晋升；
+- `boundary`：L0 segment 与活动 L1 memory 之间的边，用于新事件实时吸收到已有局部主题；
+- `cross_level`：相邻层 memory 之间的相似边，用于 owner/wake 候选和审计，不用于把不同层级的节点放入同一个社区。
+
+因此，G0 保留 L0↔L1 的边，因为新事件必须能够找到已有 L1 的普通更新入口；G1、G2 等高层边界图可以保留 L1↔L2、L2↔L3 的候选边，但社区检测只读取当前层的 peer 边。跨层 owner 的最终判断仍由 `TopicOwnerRouter` 和固定 JSON schema 完成，不能由 raw score、图连通性或跨层路径直接决定。
+
+这样可以避免 `L1-A ↔ L2 ↔ L1-B` 的传递连接把两个本来不同的 L1 主题错误合并，同时保留跨层关系作为后续归属判断和唤醒信号。相似度阈值在各层复用同一全局标准；不同层的不同含义来自表示粒度和边的生命周期职责，而不是人为设置不同阈值。
 
 ## 多 memory 社区的分配
 
@@ -114,6 +126,6 @@ support_strength
 `MemoryRelationStore` 已经提供关系对象、序列化和恢复接口，但当前默认关闭：
 
 - 不允许写入 memory-memory 关系；
-- 不创建 memory-memory 图边；
-- 不参与当前单层图的社区检测；
-- 后续实现上层 memory graph 时可以在不改变底层活动图数据结构的情况下启用。
+- 运行时可以保留相邻层 memory 的 `cross_level` 候选边，但不把它们当作 memory-memory peer 关系；
+- 同层 memory-memory peer 边只在对应层的社区视图中参与检测；
+- owner 归属仍由独立路由器决定，不由关系存储或图连通性直接决定。

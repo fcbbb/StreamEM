@@ -21,6 +21,7 @@ class DailyGraphConfig:
     retrieval_rrf_k: int = 60
     postprocess_workers: int = 1
     owner_candidate_top_k: int = 5
+    promotion_inactivity_days: tuple[int, ...] = (30, 90)
 
     def __post_init__(self) -> None:
         if self.knn_k < 1:
@@ -47,6 +48,21 @@ class DailyGraphConfig:
             raise ValueError("retrieval_rrf_k must be positive")
         if self.owner_candidate_top_k < 1:
             raise ValueError("owner_candidate_top_k must be positive")
+        if not self.promotion_inactivity_days:
+            raise ValueError("promotion_inactivity_days must not be empty")
+        if any(
+            isinstance(days, bool) or not isinstance(days, int) or days < 1
+            for days in self.promotion_inactivity_days
+        ):
+            raise ValueError("promotion_inactivity_days must contain positive integers")
+        if any(
+            right <= left
+            for left, right in zip(
+                self.promotion_inactivity_days,
+                self.promotion_inactivity_days[1:],
+            )
+        ):
+            raise ValueError("promotion_inactivity_days must increase by level")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

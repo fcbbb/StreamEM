@@ -229,6 +229,33 @@ class ComponentTests(unittest.TestCase):
         self.assertNotIn("m1", restored.graph(0).nodes)
         self.assertNotIn("m1", restored.graph(1).nodes)
 
+    def test_cross_level_edges_are_retained_but_excluded_from_peer_view(self) -> None:
+        encoder = VectorEncoder({
+            "topic": [1.0, 0.0],
+        })
+        layered = LayeredActiveGraph(
+            encoder,
+            DailyGraphConfig(
+                new_memory_threshold=0.5,
+                knn_k=10,
+            ),
+        )
+        layered.add_memory(1, "l1-a", "topic", memory_level=1)
+        layered.add_memory(1, "l2-owner", "topic", memory_level=2)
+        layered.add_memory(1, "l1-b", "topic", memory_level=1)
+
+        boundary = layered.graph(1)
+        self.assertEqual(
+            boundary.edge_relation("l1-a", "l2-owner"), "cross_level"
+        )
+        self.assertTrue(boundary.graph.has_edge("l1-a", "l2-owner"))
+        self.assertTrue(boundary.graph.has_edge("l1-a", "l1-b"))
+
+        peer_view = layered.community_graph(1)
+        self.assertTrue(peer_view.has_edge("l1-a", "l1-b"))
+        self.assertFalse(peer_view.has_edge("l1-a", "l2-owner"))
+        self.assertNotIn("l2-owner", set(peer_view.neighbors("l1-a")))
+
 
 if __name__ == "__main__":
     unittest.main()

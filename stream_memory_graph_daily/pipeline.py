@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -21,6 +21,7 @@ from .llm import JsonLLM
 from .memory import MemoryService, utc_now
 from .models import BoundaryRecord, MemoryRecord, SegmentRecord
 from .purification import CommunityPurifier, PurifiedGroup
+from .promotion import LevelPromotionScheduler, PromotionCandidate
 from .relations import MemoryRelationStore
 from .retrieval import BM25, entity_overlap, extract_entities, lex_tokens, rrf_fuse
 from .routing import OwnerDecision, TopicOwnerRouter
@@ -67,6 +68,10 @@ class DailyMemoryGraph:
         # boundary graph (segments plus active L1 memories).
         self.active_graph = self.layered_graph.graph(0)
         self.planner = ConstrainedCommunityPlanner(self.config)
+        self.promotion_scheduler = LevelPromotionScheduler(
+            self.config,
+            max_level=self.layered_graph.max_level,
+        )
         self.stage_audit: list[dict[str, Any]] = []
         self.cutter = ConversationCutter(llm, audit_sink=self._audit_stage)
         self.anchor_extractor = AnchorExtractor(llm, audit_sink=self._audit_stage)
@@ -86,6 +91,14 @@ class DailyMemoryGraph:
         self.checkpoint_count = 0
         self.trace: list[dict[str, Any]] = []
         self.llm_errors: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _set_logical_mention_time(
+        memory: MemoryRecord, mentioned_at: str
+    ) -> MemoryRecord:
+        """Use session/checkpoint time for lifecycle decisions, not wall time."""
+
+        return replace(memory, last_mentioned_at=normalize_date(mentioned_at))
 
     def _trace(self, event: str, **values: Any) -> None:
         self.trace.append({"at": utc_now(), "event": event, **values})
@@ -441,6 +454,7 @@ class DailyMemoryGraph:
                 memory.memory_id,
                 memory.topic,
                 self._memory_direct_representations(memory),
+                memory.level,
             )
 
     def _update_memory_in_layered_graphs(self, memory: MemoryRecord) -> None:
@@ -452,6 +466,7 @@ class DailyMemoryGraph:
                     memory.memory_id,
                     memory.topic,
                     self._memory_direct_representations(memory),
+                    memory.level,
                 )
             else:
                 self.layered_graph.add_memory(
@@ -459,10 +474,15 @@ class DailyMemoryGraph:
                     memory.memory_id,
                     memory.topic,
                     self._memory_direct_representations(memory),
+                    memory.level,
                 )
 
-    def _remove_memory_from_layered_graphs(self, memory_id: str) -> None:
-        self.layered_graph.remove_nodes({memory_id})
+    def _remove_memory_from_layered_graphs(
+        self, memory_ids: str | Iterable[str]
+    ) -> None:
+        if isinstance(memory_ids, str):
+            memory_ids = {memory_ids}
+        self.layered_graph.remove_nodes(set(memory_ids))
 
     def _run_purification_task(
         self,
@@ -578,6 +598,88 @@ class DailyMemoryGraph:
         except Exception as exc:
             return {"kind": "error", "error": exc}, audit_events
 
+    def _run_promotion_task(
+        self,
+        task: tuple[PromotionCandidate, dict[str, MemoryRecord]],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Partition one inactive region and compress eligible groups one level."""
+
+        candidate, memory_snapshot = task
+        audit_events: list[dict[str, Any]] = []
+
+        def collect_audit(stage: str, action: str, values: dict[str, Any]) -> None:
+            audit_events.append({"stage": stage, "action": action, "values": values})
+
+        try:
+            source_memories = [
+                memory_snapshot[memory_id]
+                for memory_id in candidate.node_ids
+                if memory_id in memory_snapshot
+            ]
+            if not source_memories:
+                return {"kind": "skipped", "reason": "no_source_memories"}, audit_events
+
+            if len(source_memories) == 1:
+                groups = [
+                    PurifiedGroup(
+                        "singleton",
+                        (source_memories[0].memory_id,),
+                        (source_memories[0].memory_id,),
+                        (),
+                    )
+                ]
+            else:
+                purifier = CommunityPurifier(self.llm, audit_sink=collect_audit)
+                groups = purifier.purify(
+                    f"promotion:{candidate.source_level}:{':'.join(candidate.node_ids)}",
+                    [],
+                    source_memories,
+                    allow_memory_only=True,
+                    allow_multiple_memories=True,
+                )
+
+            service = MemoryService(self.llm, audit_sink=collect_audit)
+            promoted: list[dict[str, Any]] = []
+            due_ids = set(candidate.due_ids)
+            for group in groups:
+                group_ids = tuple(sorted(group.memory_ids))
+                if not group_ids or not set(group_ids).issubset(due_ids):
+                    # An active lower-level member protects this group. A
+                    # false graph edge can still be split by purification.
+                    continue
+                group_memories = [memory_snapshot[memory_id] for memory_id in group_ids]
+                latest = self.promotion_scheduler.latest_mention_at(group_memories)
+                memory = service.extract_from_memories(
+                    f"promotion:{candidate.source_level}:{group.group_id}",
+                    group_memories,
+                    target_level=candidate.target_level,
+                    last_mentioned_at=latest,
+                )
+                promoted.append(
+                    {
+                        "source_memory_ids": list(group_ids),
+                        "group_id": group.group_id,
+                        "memory": memory,
+                    }
+                )
+            return {
+                "kind": "promotions",
+                "source_level": candidate.source_level,
+                "target_level": candidate.target_level,
+                "candidate_node_ids": list(candidate.node_ids),
+                "due_ids": list(candidate.due_ids),
+                "promoted": promoted,
+            }, audit_events
+        except Exception as exc:
+            return {
+                "kind": "error",
+                "source_level": candidate.source_level,
+                "target_level": candidate.target_level,
+                "candidate_node_ids": list(candidate.node_ids),
+                "due_ids": list(candidate.due_ids),
+                "error": exc,
+            }, audit_events
+
     def _append_task_audits(self, audit_events: list[dict[str, Any]]) -> None:
         for event in audit_events:
             self._audit_stage(
@@ -607,6 +709,7 @@ class DailyMemoryGraph:
                 raise result["error"]
             owner = self.memories[owner_id]
             updated = result["updated"]
+            updated = self._set_logical_mention_time(updated, checkpoint_date)
             fusion_decision = result["decision"]
             self.memories[owner_id] = updated
             self.topic_owner_router.register(updated)
@@ -686,6 +789,7 @@ class DailyMemoryGraph:
                 existing_before = result["existing_before"]
                 updated = result["updated"]
                 decision = result["decision"]
+                updated = self._set_logical_mention_time(updated, checkpoint_date)
                 self.memories[memory_id] = updated
                 self.topic_owner_router.register(updated)
                 self._update_memory_in_layered_graphs(updated)
@@ -761,6 +865,7 @@ class DailyMemoryGraph:
 
             if memory.memory_id in self.memories:
                 raise ValueError(f"generated duplicate memory_id {memory.memory_id}")
+            memory = self._set_logical_mention_time(memory, checkpoint_date)
             self.memories[memory.memory_id] = memory
             self.topic_owner_router.register(memory)
             self._archive_segments(segment_ids, "compressed", memory.memory_id)
@@ -836,6 +941,145 @@ class DailyMemoryGraph:
             result=result,
         )
 
+    def _run_promotions(
+        self,
+        checkpoint_date: str,
+        changes: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Promote time-inactive memories by exactly one level."""
+
+        memory_snapshot = dict(self.memories)
+        candidates: list[PromotionCandidate] = []
+        candidate_errors: list[dict[str, Any]] = []
+        for source_level in range(1, self.layered_graph.max_level):
+            try:
+                candidates.extend(
+                    self.promotion_scheduler.candidates(
+                        self.layered_graph,
+                        memory_snapshot,
+                        checkpoint_date,
+                        source_level=source_level,
+                        detect=self.planner.detect_nodes,
+                    )
+                )
+            except Exception as exc:
+                error = {
+                    "at": utc_now(),
+                    "checkpoint_date": checkpoint_date,
+                    "source_level": source_level,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+                candidate_errors.append(error)
+                self.llm_errors.append(error)
+                self._audit_stage("memory_promotion", "candidate_error", error)
+
+        promotion_results: list[dict[str, Any]] = []
+        for candidate in candidates:
+            result, audit_events = self._run_promotion_task(
+                (candidate, memory_snapshot)
+            )
+            self._append_task_audits(audit_events)
+            promotion_results.append(
+                {
+                    "kind": result.get("kind"),
+                    "source_level": result.get("source_level"),
+                    "target_level": result.get("target_level"),
+                    "candidate_node_ids": result.get("candidate_node_ids", []),
+                    "due_ids": result.get("due_ids", []),
+                    "promoted": [
+                        {
+                            "group_id": row.get("group_id"),
+                            "source_memory_ids": row.get("source_memory_ids", []),
+                            "memory_id": (
+                                row["memory"].memory_id
+                                if row.get("memory") is not None
+                                else None
+                            ),
+                        }
+                        for row in result.get("promoted", [])
+                    ],
+                }
+            )
+            if result.get("kind") == "error":
+                error = {
+                    "at": utc_now(),
+                    "checkpoint_date": checkpoint_date,
+                    "source_level": candidate.source_level,
+                    "target_level": candidate.target_level,
+                    "candidate_node_ids": list(candidate.node_ids),
+                    "error_type": type(result.get("error")).__name__,
+                    "error": str(result.get("error")),
+                }
+                self.llm_errors.append(error)
+                self._audit_stage("memory_promotion", "error", error)
+                changes.append({**error, "action": "promotion_failed"})
+                continue
+
+            for promoted in result.get("promoted", []):
+                promoted_memory = promoted.get("memory")
+                source_ids = {
+                    str(memory_id) for memory_id in promoted.get("source_memory_ids", [])
+                }
+                if promoted_memory is None:
+                    continue
+                if not source_ids or not source_ids.issubset(self.memories):
+                    continue
+                if any(
+                    self.memories[memory_id].level != promoted_memory.level - 1
+                    for memory_id in source_ids
+                ):
+                    continue
+                if promoted_memory.memory_id in self.memories:
+                    error = {
+                        "at": utc_now(),
+                        "checkpoint_date": checkpoint_date,
+                        "source_memory_ids": sorted(source_ids),
+                        "memory_id": promoted_memory.memory_id,
+                        "error_type": "ValueError",
+                        "error": "generated duplicate promoted memory_id",
+                    }
+                    self.llm_errors.append(error)
+                    self._audit_stage("memory_promotion", "error", error)
+                    changes.append({**error, "action": "promotion_failed"})
+                    continue
+
+                self.memories[promoted_memory.memory_id] = promoted_memory
+                self._add_memory_to_layered_graphs(promoted_memory)
+                self._remove_memory_from_layered_graphs(source_ids)
+                self.topic_owner_router.replace(source_ids, promoted_memory)
+                self._audit_stage(
+                    "memory_promotion",
+                    "applied",
+                    {
+                        "checkpoint_date": checkpoint_date,
+                        "source_memory_ids": sorted(source_ids),
+                        "output_memory": promoted_memory.to_dict(),
+                    },
+                )
+                changes.append(
+                    {
+                        "source": "time_based_promotion",
+                        "action": "memory_promoted",
+                        "source_memory_ids": sorted(source_ids),
+                        "memory_id": promoted_memory.memory_id,
+                        "source_level": promoted_memory.level - 1,
+                        "target_level": promoted_memory.level,
+                        "last_mentioned_at": promoted_memory.last_mentioned_at,
+                    }
+                )
+
+        return {
+            "candidate_count": len(candidates),
+            "applied_count": sum(
+                1
+                for change in changes
+                if change.get("action") == "memory_promoted"
+            ),
+            "candidate_errors": candidate_errors,
+            "results": promotion_results,
+        }
+
     def checkpoint(
         self,
         *,
@@ -848,7 +1092,14 @@ class DailyMemoryGraph:
         ) else None
         if checkpoint_date is None:
             return {"status": "empty", "checkpoint": self.checkpoint_count}
-        if not self.pending_segment_ids and not force:
+        promotion_due = bool(
+            self.promotion_scheduler.due_ids(
+                self.memories,
+                checkpoint_date,
+                active_ids=self.layered_graph.memory_ids(),
+            )
+        )
+        if not self.pending_segment_ids and not force and not promotion_due:
             return {
                 "status": "no_pending",
                 "checkpoint": self.checkpoint_count,
@@ -1208,6 +1459,7 @@ class DailyMemoryGraph:
             )
 
         self.pending_segment_ids = retry_ids
+        promotion_result = self._run_promotions(checkpoint_date, changes)
         self.checkpoint_count += 1
         self.last_checkpoint_date = checkpoint_date
         result = {
@@ -1225,6 +1477,7 @@ class DailyMemoryGraph:
             "boundary_segment_ids": sorted(plan.boundaries),
             "cannot_link_memory_pairs": [list(pair) for pair in sorted(plan.cannot_link_memory_pairs)],
             "retry_segment_ids": sorted(retry_ids),
+            "promotion": promotion_result,
         }
         self._audit_stage(
             "checkpoint",
@@ -1275,9 +1528,11 @@ class DailyMemoryGraph:
         semantic_owner_ids: list[str] = []
         lexical_documents: list[tuple[str, str]] = []
         entity_documents: dict[str, str] = {}
+        active_memory_ids = self.layered_graph.memory_ids()
         retrieval_nodes: list[tuple[str, str, list[str]]] = [
             (memory_id, "memory", memory_fields(memory))
             for memory_id, memory in sorted(self.memories.items())
+            if memory_id in active_memory_ids
         ]
         retrieval_nodes.extend(
             (segment_id, "segment", segment_fields(segment_id))
@@ -1502,8 +1757,15 @@ class DailyMemoryGraph:
         instance.stage_audit = list(payload.get("stage_audit", []))
         instance.llm_errors = list(payload.get("llm_errors", []))
         layered_graph_payload = payload.get("layered_active_graph")
-        if isinstance(layered_graph_payload, dict) and "graphs" in layered_graph_payload:
+        has_layered_graph = (
+            isinstance(layered_graph_payload, dict)
+            and "graphs" in layered_graph_payload
+        )
+        if has_layered_graph:
             instance.layered_graph.restore(layered_graph_payload)
+            instance.layered_graph.annotate_memory_levels(
+                {memory_id: memory.level for memory_id, memory in instance.memories.items()}
+            )
             instance.active_graph = instance.layered_graph.graph(0)
         else:
             active_graph_payload = payload.get("active_graph", {})
@@ -1511,11 +1773,19 @@ class DailyMemoryGraph:
                 {"graphs": {"0": active_graph_payload}}
             )
             instance.active_graph = instance.layered_graph.graph(0)
-        for memory in instance.memories.values():
-            instance._update_memory_in_layered_graphs(memory)
-        if instance.layered_graph.memory_ids() != set(instance.memories):
-            raise ValueError("state memory records and active memory nodes do not match")
-        instance.topic_owner_router.rebuild(instance.memories.values())
+            for memory in instance.memories.values():
+                instance._update_memory_in_layered_graphs(memory)
+        active_memory_ids = instance.layered_graph.memory_ids()
+        unknown_active_memories = active_memory_ids - set(instance.memories)
+        if unknown_active_memories:
+            raise ValueError(
+                "active graph has unknown memories: "
+                f"{sorted(unknown_active_memories)}"
+            )
+        instance.topic_owner_router.rebuild(
+            instance.memories[memory_id]
+            for memory_id in sorted(active_memory_ids)
+        )
         unknown_active_segments = instance.active_graph.segment_ids() - set(instance.segments)
         if unknown_active_segments:
             raise ValueError(f"active graph has unknown segments: {sorted(unknown_active_segments)}")

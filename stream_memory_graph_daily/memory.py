@@ -3,13 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from .level_policy import get_level_policy
 from .llm import JsonLLM, LLMUnavailable
 from .models import MemoryRecord, SegmentRecord
 from .prompts import (
     MEMORY_EXTRACTION_PROMPT,
+    MEMORY_EXTRACTION_FROM_MEMORIES_PROMPT,
     MEMORY_FUSION_PROMPT,
     MEMORY_FUSION_FROM_L1_PROMPT,
     render_memory_level_policy,
@@ -25,6 +26,13 @@ def utc_now() -> str:
 
 def stable_memory_id(segment_ids: list[str]) -> str:
     payload = "\x1f".join(sorted(segment_ids)).encode("utf-8")
+    return "memory:" + hashlib.sha1(payload).hexdigest()[:16]
+
+
+def stable_memory_id_from_members(target_level: int, memory_ids: Iterable[str]) -> str:
+    payload = "\x1f".join(
+        [f"target_level:{target_level}", *sorted(str(memory_id) for memory_id in memory_ids)]
+    ).encode("utf-8")
     return "memory:" + hashlib.sha1(payload).hexdigest()[:16]
 
 
@@ -73,6 +81,19 @@ def direct_memory_member(memory: MemoryRecord) -> dict[str, Any]:
     }
 
 
+def memory_level_prompt_row(memory: MemoryRecord) -> dict[str, Any]:
+    """Expose semantic lower-level content without raw provenance expansion."""
+
+    return {
+        "memory_id": memory.memory_id,
+        "level": memory.level,
+        "topic": memory.topic,
+        "summary": memory.summary,
+        "topic_context": memory.topic_context,
+        "user_memories": memory.user_memories,
+    }
+
+
 def merge_direct_segment_members(
     existing: MemoryRecord, segments: list[SegmentRecord]
 ) -> list[dict[str, Any]]:
@@ -108,13 +129,17 @@ def _initial_items(
 
     output = []
     for index, value in enumerate(values, start=1):
+        clean_value = {
+            "type": str(value.get("type", "")),
+            "content": str(value.get("content", "")),
+        }
         digest = hashlib.sha1(
             (
                 f"{memory_id}\x1f{field_name}\x1f{index}\x1f"
-                f"{value.get('type', '')}\x1f{value.get('content', '')}"
+                f"{clean_value['type']}\x1f{clean_value['content']}"
             ).encode("utf-8")
         ).hexdigest()[:16]
-        output.append({"item_id": f"item:{digest}", **value})
+        output.append({"item_id": f"item:{digest}", **clean_value})
     return output
 
 
@@ -215,6 +240,96 @@ class MemoryService:
             level=1,
             direct_members=[direct_segment_member(segment) for segment in segments],
             last_mentioned_at=now,
+        )
+
+    def extract_from_memories(
+        self,
+        community_id: str,
+        memories: list[MemoryRecord],
+        *,
+        target_level: int,
+        last_mentioned_at: str,
+    ) -> MemoryRecord | None:
+        """Create one higher-level memory from direct lower-level memories."""
+
+        if not memories:
+            raise ValueError("higher-level extraction needs lower-level memories")
+        if target_level < 2:
+            raise ValueError("higher-level extraction needs target_level >= 2")
+        if any(memory.level != target_level - 1 for memory in memories):
+            raise ValueError("all promotion inputs must be direct lower-level memories")
+        policy = get_level_policy(target_level)
+        value = self._complete(
+            "memory_extraction_from_memories",
+            self._level_system_prompt(
+                MEMORY_EXTRACTION_FROM_MEMORIES_PROMPT,
+                target_level,
+            ),
+            {
+                "community_id": community_id,
+                "target_level": target_level,
+                "level_policy": policy.to_dict(),
+                "memories": [memory_level_prompt_row(memory) for memory in memories],
+                "source_memory_ids": [memory.memory_id for memory in memories],
+            },
+        )
+        if value == {}:
+            return None
+        required = {"topic", "summary", "topic_context", "user_memories"}
+        if set(value) != required:
+            raise ValueError(
+                "higher-level memory extraction fields must be exactly "
+                f"{sorted(required)}"
+            )
+        topic_context = value["topic_context"]
+        user_memories = value["user_memories"]
+        if not isinstance(topic_context, list) or not isinstance(user_memories, list):
+            raise ValueError("higher-level memory item fields must be lists")
+        if not topic_context and not user_memories:
+            return None
+        now = utc_now()
+        return MemoryRecord(
+            memory_id=stable_memory_id_from_members(
+                target_level,
+                [memory.memory_id for memory in memories],
+            ),
+            topic=str(value["topic"]).strip(),
+            summary=str(value["summary"]).strip(),
+            topic_context=_initial_items(
+                stable_memory_id_from_members(
+                    target_level,
+                    [memory.memory_id for memory in memories],
+                ),
+                "topic_context",
+                topic_context,
+            ),
+            user_memories=_initial_items(
+                stable_memory_id_from_members(
+                    target_level,
+                    [memory.memory_id for memory in memories],
+                ),
+                "user_memories",
+                user_memories,
+            ),
+            source_anchors=list(
+                dict.fromkeys(
+                    anchor
+                    for memory in memories
+                    for anchor in memory.source_anchors
+                )
+            ),
+            source_segments=list(
+                dict.fromkeys(
+                    segment_id
+                    for memory in memories
+                    for segment_id in memory.source_segments
+                )
+            ),
+            created_at=now,
+            updated_at=now,
+            level=target_level,
+            direct_members=[direct_memory_member(memory) for memory in memories],
+            last_mentioned_at=last_mentioned_at,
         )
 
     def fuse(
