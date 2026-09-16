@@ -14,6 +14,7 @@ from stream_memory_graph_daily.prompts import (
     MEMORY_LEVEL_POLICY_PROMPT,
     SHARED_SEMANTICS,
     TOPIC_OWNER_ROUTING_PROMPT,
+    load_memory_prompt,
     render_memory_level_policy,
 )
 
@@ -44,6 +45,41 @@ class PromptCompositionTests(unittest.TestCase):
         self.assertNotIn("{{", rendered)
         self.assertNotIn("}}", rendered)
         self.assertNotIn(SHARED_SEMANTICS, MEMORY_LEVEL_POLICY_PROMPT)
+
+    def test_community_partition_has_one_canonical_prompt(self) -> None:
+        self.assertIs(COMMUNITY_PURIFICATION_PROMPT, COMMUNITY_TOPIC_PARTITION_PROMPT)
+
+    def test_memory_modes_share_templates_and_only_level_rules_change(self) -> None:
+        prompts = {
+            ("extraction", 1, "segments"): load_memory_prompt(
+                "extraction", 1, "segments"
+            ),
+            ("extraction", 2, "memories"): load_memory_prompt(
+                "extraction", 2, "memories"
+            ),
+            ("extraction", 3, "memories"): load_memory_prompt(
+                "extraction", 3, "memories"
+            ),
+            ("fusion", 1, "segments"): load_memory_prompt(
+                "fusion", 1, "segments"
+            ),
+            ("fusion", 2, "provisional_l1"): load_memory_prompt(
+                "fusion", 2, "provisional_l1"
+            ),
+            ("fusion", 3, "provisional_l1"): load_memory_prompt(
+                "fusion", 3, "provisional_l1"
+            ),
+        }
+        for prompt in prompts.values():
+            self.assertNotIn("{{", prompt)
+            self.assertNotIn("}}", prompt)
+            self.assertIn("Target level:", prompt)
+            self.assertIn(SHARED_SEMANTICS, prompt)
+        self.assertIn("raw L0 conversation segments", prompts[("extraction", 1, "segments")])
+        self.assertIn("direct lower-level memories", prompts[("extraction", 2, "memories")])
+        self.assertIn("provisional_l1", prompts[("fusion", 2, "provisional_l1")])
+        self.assertNotEqual(prompts[("extraction", 1, "segments")], prompts[("extraction", 2, "memories")])
+        self.assertNotEqual(prompts[("extraction", 2, "memories")], prompts[("extraction", 3, "memories")])
 
     def test_stage_identifiers_and_output_contracts_remain_available(self) -> None:
         self.assertTrue(CUTTING_PROMPT.startswith("You are segmenting a conversation"))

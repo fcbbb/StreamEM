@@ -11,9 +11,9 @@ Return exactly one JSON object with exactly these fields:
 }
 
 Use "same_topic" only when the provisional L1 clearly belongs to one candidate. Use
-"new_topic" when it is clearly a different topic from all candidates. Use "ambiguous"
-when two or more candidates remain plausible. Use "uncertain" when the evidence is not
-enough to decide. If the reason is not "same_topic", owner_memory_id must be null.
-Never invent another reason, field, or relationship type.
+"new_topic" when it is clearly a different topic from all candidates. Use
+"ambiguous" when two or more candidates remain plausible. Use "uncertain" when the
+evidence is not enough to decide. If the reason is not "same_topic", owner_memory_id
+must be null. Never invent another reason, field, or relationship type.
 
 {{SHARED_SEMANTICS}}

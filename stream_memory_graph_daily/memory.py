@@ -8,13 +8,7 @@ from typing import Any, Callable, Iterable
 from .level_policy import get_level_policy
 from .llm import JsonLLM, LLMUnavailable
 from .models import MemoryRecord, SegmentRecord
-from .prompts import (
-    MEMORY_EXTRACTION_PROMPT,
-    MEMORY_EXTRACTION_FROM_MEMORIES_PROMPT,
-    MEMORY_FUSION_PROMPT,
-    MEMORY_FUSION_FROM_L1_PROMPT,
-    render_memory_level_policy,
-)
+from .prompts import load_memory_prompt
 
 
 AuditSink = Callable[[str, str, dict[str, Any]], None]
@@ -148,6 +142,43 @@ class MemoryService:
         self.llm = llm
         self.audit_sink = audit_sink
 
+    @staticmethod
+    def _strict_item_list(name: str, values: Any) -> list[dict[str, str]]:
+        if not isinstance(values, list):
+            raise ValueError(f"{name} must be a list")
+        normalized: list[dict[str, str]] = []
+        for index, item in enumerate(values, start=1):
+            if not isinstance(item, dict) or not set(item).issubset(
+                {"item_id", "type", "content"}
+            ) or not {"type", "content"}.issubset(item):
+                raise ValueError(
+                    f"{name} item {index} must contain type and content only"
+                )
+            if "item_id" in item and (
+                not isinstance(item["item_id"], str) or not item["item_id"].strip()
+            ):
+                raise ValueError(f"{name} item {index} item_id must be a non-empty string")
+            if not isinstance(item["type"], str) or not item["type"].strip():
+                raise ValueError(f"{name} item {index} type must be a non-empty string")
+            if not isinstance(item["content"], str) or not item["content"].strip():
+                raise ValueError(
+                    f"{name} item {index} content must be a non-empty string"
+                )
+            normalized.append(
+                {"type": item["type"].strip(), "content": item["content"].strip()}
+            )
+        return normalized
+
+    @staticmethod
+    def _strict_item_value(value: Any, label: str) -> dict[str, str]:
+        if not isinstance(value, dict) or set(value) != {"type", "content"}:
+            raise ValueError(f"{label} value must contain exactly type and content")
+        if not isinstance(value["type"], str) or not value["type"].strip():
+            raise ValueError(f"{label} type must be a non-empty string")
+        if not isinstance(value["content"], str) or not value["content"].strip():
+            raise ValueError(f"{label} content must be a non-empty string")
+        return {"type": value["type"].strip(), "content": value["content"].strip()}
+
     def _complete(self, stage: str, system: str, payload: dict[str, Any]) -> dict[str, Any]:
         if self.llm is None:
             raise LLMUnavailable("memory extraction/fusion requires an LLM")
@@ -179,12 +210,6 @@ class MemoryService:
             )
         return value
 
-    @staticmethod
-    def _level_system_prompt(system: str, target_level: int) -> str:
-        """Keep the established task prompt and append the shared level policy."""
-
-        return system.rstrip() + "\n\n" + render_memory_level_policy(target_level)
-
     def extract(
         self,
         community_id: str,
@@ -202,7 +227,7 @@ class MemoryService:
         policy = get_level_policy(target_level)
         value = self._complete(
             "memory_extraction",
-            self._level_system_prompt(MEMORY_EXTRACTION_PROMPT, target_level),
+            load_memory_prompt("extraction", target_level, "segments"),
             {
                 "community_id": community_id,
                 "target_level": target_level,
@@ -213,12 +238,16 @@ class MemoryService:
         if value == {}:
             return None
         required = {"topic", "summary", "topic_context", "user_memories"}
+        if not isinstance(value, dict):
+            raise ValueError("memory extraction output must be an object")
         if set(value) != required:
             raise ValueError(f"memory extraction fields must be exactly {sorted(required)}")
-        topic_context = value["topic_context"]
-        user_memories = value["user_memories"]
-        if not isinstance(topic_context, list) or not isinstance(user_memories, list):
-            raise ValueError("memory extraction item fields must be lists")
+        if not isinstance(value["topic"], str) or not value["topic"].strip():
+            raise ValueError("memory extraction topic must be a non-empty string")
+        if not isinstance(value["summary"], str) or not value["summary"].strip():
+            raise ValueError("memory extraction summary must be a non-empty string")
+        topic_context = self._strict_item_list("topic_context", value["topic_context"])
+        user_memories = self._strict_item_list("user_memories", value["user_memories"])
         if not topic_context and not user_memories:
             return None
         now = utc_now()
@@ -261,10 +290,7 @@ class MemoryService:
         policy = get_level_policy(target_level)
         value = self._complete(
             "memory_extraction_from_memories",
-            self._level_system_prompt(
-                MEMORY_EXTRACTION_FROM_MEMORIES_PROMPT,
-                target_level,
-            ),
+            load_memory_prompt("extraction", target_level, "memories"),
             {
                 "community_id": community_id,
                 "target_level": target_level,
@@ -275,16 +301,20 @@ class MemoryService:
         )
         if value == {}:
             return None
+        if not isinstance(value, dict):
+            raise ValueError("higher-level memory extraction output must be an object")
         required = {"topic", "summary", "topic_context", "user_memories"}
         if set(value) != required:
             raise ValueError(
                 "higher-level memory extraction fields must be exactly "
                 f"{sorted(required)}"
             )
-        topic_context = value["topic_context"]
-        user_memories = value["user_memories"]
-        if not isinstance(topic_context, list) or not isinstance(user_memories, list):
-            raise ValueError("higher-level memory item fields must be lists")
+        if not isinstance(value["topic"], str) or not value["topic"].strip():
+            raise ValueError("higher-level memory topic must be a non-empty string")
+        if not isinstance(value["summary"], str) or not value["summary"].strip():
+            raise ValueError("higher-level memory summary must be a non-empty string")
+        topic_context = self._strict_item_list("topic_context", value["topic_context"])
+        user_memories = self._strict_item_list("user_memories", value["user_memories"])
         if not topic_context and not user_memories:
             return None
         now = utc_now()
@@ -364,11 +394,10 @@ class MemoryService:
         )
         value = self._complete(
             "memory_fusion_from_l1" if provisional is not None else "memory_fusion",
-            self._level_system_prompt(
-                MEMORY_FUSION_FROM_L1_PROMPT
-                if provisional is not None
-                else MEMORY_FUSION_PROMPT,
+            load_memory_prompt(
+                "fusion",
                 target_level,
+                "provisional_l1" if provisional is not None else "segments",
             ),
             {
                 "existing_memory": existing.prompt_dict(),
@@ -393,17 +422,25 @@ class MemoryService:
                 ),
             },
         )
+        if not isinstance(value, dict):
+            raise ValueError("memory fusion output must be an object")
         required = {"topic", "summary", "operations", "no_op_reason"}
         if set(value) != required:
             raise ValueError(f"memory fusion fields must be exactly {sorted(required)}")
-        topic = str(value["topic"]).strip()
-        summary = str(value["summary"]).strip()
+        if not isinstance(value["topic"], str) or not value["topic"].strip():
+            raise ValueError("fusion topic must be a non-empty string")
+        if not isinstance(value["summary"], str) or not value["summary"].strip():
+            raise ValueError("fusion summary must be a non-empty string")
+        topic = value["topic"].strip()
+        summary = value["summary"].strip()
         operations = value["operations"]
         no_op_reason = value["no_op_reason"]
         if not topic or not summary:
             raise ValueError("fusion topic and summary must be non-empty strings")
         if not isinstance(operations, list):
             raise ValueError("fusion operations must be a list")
+        if no_op_reason is not None and not isinstance(no_op_reason, str):
+            raise ValueError("fusion no_op_reason must be a string or null")
         if operations:
             if no_op_reason is not None:
                 raise ValueError("fusion no_op_reason must be null when operations are present")
@@ -425,9 +462,13 @@ class MemoryService:
                 raise ValueError(f"fusion operation {index} must be an object")
             operation_name = operation.get("operation")
             field_name = operation.get("field")
-            if operation_name not in {"add", "update", "delete"}:
+            if not isinstance(operation_name, str) or operation_name not in {
+                "add",
+                "update",
+                "delete",
+            }:
                 raise ValueError(f"fusion operation {index} has an invalid operation")
-            if field_name not in fields:
+            if not isinstance(field_name, str) or field_name not in fields:
                 raise ValueError(f"fusion operation {index} has an invalid field")
             if operation_name == "add":
                 expected_keys = {"operation", "field", "value", "source_segment_ids"}
@@ -458,32 +499,36 @@ class MemoryService:
                 str(item["item_id"]): position for position, item in enumerate(items)
             }
             if operation_name == "add":
-                if not isinstance(operation["value"], dict):
-                    raise ValueError("add operation value must be an object")
-                if set(operation["value"]) != {"type", "content"}:
-                    raise ValueError("add operation value must contain exactly type and content")
+                operation_value = self._strict_item_value(
+                    operation["value"], f"fusion operation {index} add"
+                )
                 target_id = stable_item_id(
                     existing.memory_id,
                     str(field_name),
-                    operation["value"],
+                    operation_value,
                 )
                 target = (str(field_name), target_id)
                 if target in touched_targets or target_id in positions:
                     raise ValueError("add operation would duplicate a memory item")
                 touched_targets.add(target)
                 item = MemoryRecord._validate_items(
-                    str(field_name), [{"item_id": target_id, **operation["value"]}]
+                    str(field_name), [{"item_id": target_id, **operation_value}]
                 )[0]
                 items.append(item)
                 normalized_operation = {
                     "operation": "add",
                     "field": field_name,
                     "item_id": target_id,
-                    "value": dict(operation["value"]),
+                    "value": operation_value,
                     "source_segment_ids": normalized_source_ids,
                 }
             else:
-                target_id = str(operation.get("item_id", "")).strip()
+                raw_target_id = operation.get("item_id")
+                if not isinstance(raw_target_id, str):
+                    raise ValueError(
+                        f"fusion operation {index} item_id must be a non-empty string"
+                    )
+                target_id = raw_target_id.strip()
                 target = (str(field_name), target_id)
                 if not target_id or target in touched_targets:
                     raise ValueError(
@@ -495,16 +540,16 @@ class MemoryService:
                         f"{operation_name} operation item_id must identify an existing item"
                     )
             if operation_name == "update":
-                if not isinstance(operation["value"], dict):
-                    raise ValueError("update operation value must be an object")
-                if set(operation["value"]) != {"type", "content"}:
-                    raise ValueError("update operation value must contain exactly type and content")
+                operation_value = self._strict_item_value(
+                    operation["value"], f"fusion operation {index} update"
+                )
                 item = MemoryRecord._validate_items(
-                    str(field_name), [{"item_id": target_id, **operation["value"]}]
+                    str(field_name), [{"item_id": target_id, **operation_value}]
                 )[0]
                 items[positions[target_id]] = item
                 normalized_operation = {
                     **operation,
+                    "value": operation_value,
                     "item_id": target_id,
                     "source_segment_ids": normalized_source_ids,
                 }

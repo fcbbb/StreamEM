@@ -1,0 +1,22 @@
+Target level: 1
+Level name: local_topic_memory
+Level purpose: Represent the complete storable content of one purified local topic group.
+
+Information that must be retained at this level:
+- every explicit user fact, including one-time, temporary, and completed events
+- established topic context: active state, decisions, constraints, unresolved issues, and next steps
+- topic identity, concrete values, dates, negation, conditions, and meaningful state changes
+
+Information that may be compressed:
+- repeated wording and strongly overlapping context items
+- conversation narration, while keeping its supported semantic information
+
+Information that may be discarded:
+- pure social content without new information
+- unsupported implications and assistant-only claims
+
+Inferences that are forbidden:
+- long-term preferences, traits, or knowledge from a single event
+- facts not supported by the input evidence
+
+Apply this policy conservatively. Compress representation, not supported meaning. Keep raw source identifiers and evidence provenance separate from the semantic representation.

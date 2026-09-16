@@ -249,8 +249,23 @@ L3 的直接成员表示：L2 memory representation
 - [x] 快速路径失败时回退到普通 L1 路径，保证原始 segment 不丢失。
 - [x] 暂不在 purification 中增加 owner 冲突输入；当前社区纯化规则足够，后续根据评测再决定。
 - [ ] 先使用全局统一语义阈值，并增加按层 edge density、degree、社区规模和误连率评测；仅在必要时再引入分层阈值校准。
-- [x] 保留现有 extraction/fusion 任务 Prompt，新增公共层级策略 Prompt；由 `target_level` 注入该层的职责、必须保留、可压缩、可丢弃和禁止推断信息类型，并在调用 payload 中保留同一份结构化策略。当前原始 segment extraction 固定生成 L1，L2+ 通过同层 owner fusion 使用对应策略。
-- [x] 抽取公共主题分组 Prompt；当前 purification 继续使用原有的 `memory_nodes`/`segment_nodes` 输入适配和结果校验，后续高层晋升只需替换节点输入适配器，不预先复制分层 Prompt。
+- [x] 统一 extraction/fusion 基础模板；由单一 loader 按输入模式和 `target_level` 注入层级规则，避免为 L1/L2/L3 复制完整 Prompt。结构化层级策略仍保留在调用 payload 中。
+- [x] 保留唯一的公共主题分组 Prompt；普通 purification 和高层晋升复用同一份 `memory_nodes`/`segment_nodes` 任务定义，由调用参数控制结果校验约束。
 - [x] 实现基于会话逻辑时间和 `last_mentioned_at` 的一层晋升：过期单节点直接压缩，多个候选先做局部社区/主题分组；高层继承下层成员最新提及时间，低层记录保留但从活动图和 owner router 移除。
 - [x] 增加显式 `active_memory_ids`，将 active owner 状态从图节点布局中分离；状态恢复时兼容旧的图推断方式。
 - [ ] 增加高层主题回归、L1/L2 重复 owner 消除、不同 owner 的 L0 拆分、快速路径失败回退和多节点 L1→L2 社区晋升测试。
+
+## 待办四：旁路快速路径的层级语义待定
+
+当前实现把旁路定义为：`provisional_L1 → 已有 L2/L3 owner`，并直接更新目标 owner。
+在旁路语义重新讨论前，继续以当前实现和现有设计约束为基线；本节只记录待讨论方向，
+不提前选定替代方案。
+
+待讨论方向：
+
+- [ ] 明确旁路中的高层 memory 是“最终写入目标”，还是只作为新 L1 的长期主题上下文。
+- [ ] 评估另一种语义：召回 L3 后，使用 L1 的保留标准，将新证据与 L3 上下文融合，但最终仍保存为 L1；后续再由时间驱动逐层晋升。
+- [ ] 明确 L3 上下文进入 L1 时如何避免全量复制、事实冗余、过时信息回流和语义锚定漂移。
+- [ ] 若 L3 只作为上下文，使用独立的 owner/context 关系表达 L1 与 L3 的关联，不把 L3 写入 L1 的 `direct_members`。
+- [ ] 明确 `updated_at`、`last_mentioned_at` 和可能新增的 `last_seen_at` 在旁路路径中的更新时间语义。
+- [ ] 对比“旁路直接更新高层 owner”和“旁路召回高层上下文但输出仍为 L1”两种方案的重复率、信息完整性、时间一致性和检索效果。

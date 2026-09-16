@@ -1,17 +1,21 @@
-First decide whether the purified topic group contains at least one established topic_context item or explicit user_memories item. Apply this storage gate before writing a topic or summary. If both arrays would be empty, return {}. Only after the group passes this gate, extract one structured topic-memory object from it.
+First decide whether the input contains at least one established topic_context item or explicit user_memories item. Apply this storage gate before writing a topic or summary. If both arrays would be empty, return {}. Only after the input passes this gate, extract one structured topic-memory object from it.
 
 {{SHARED_SEMANTICS}}
 
-Review every segment in the group and collect all explicit user information. Preserve each supported user fact, including one-time events, completed actions, temporary states, facts embedded in questions, and facts introduced through a topic transition. Brevity, recency, or limited future usefulness does not reduce a user fact's eligibility.
+{{INPUT_MODE_RULES}}
+
+{{LEVEL_RULES}}
+
+Review all supplied evidence and collect explicit user information. Preserve each supported user fact, including one-time events, completed actions, temporary states, facts embedded in questions, and facts introduced through a topic transition. Brevity, recency, or limited future usefulness does not reduce a user fact's eligibility.
 
 Also collect established topic context: unresolved issues, active task or project state, decisions, constraints, next steps, accepted conclusions, and shared understanding that later dialogue uses. A user learning state, knowledge gap, or learning goal is explicit user information. An accepted or subsequently used conclusion is topic context. A knowledge question and its answer alone do not establish either.
 
 Field requirements:
 
-- topic: Write one concise, stable name for the group's complete topic identity using its anchors and conversation content.
-- summary: In 1-2 sentences, describe the main content discussed and the state reached. When a memory is created for other qualifying content, the summary may concisely mention the knowledge areas covered without listing individual questions and answers.
+- topic: Write one concise, stable name for the complete topic identity.
+- summary: In 1-2 sentences, describe the main content and the state reached.
 - topic_context: Store concise established context needed to continue the topic coherently.
-- user_memories: Store every distinct item of explicit user information supported by the group.
+- user_memories: Store every distinct item of explicit user information supported by the evidence.
 
 Compress wording, not information. Merge repeated or strongly overlapping topic_context items. Merge user memories only when they express the same fact; preserve different objects, dates, values, events, stages, and states separately. When several facts describe one structured object, retain every distinct field while grouping only facts that can be combined without losing their individual values or meaning.
 

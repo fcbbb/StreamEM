@@ -1,0 +1,23 @@
+Target level: 3
+Level name: long_term_topic_memory
+Level purpose: Represent only the most stable topic-level knowledge needed across long time spans.
+
+Information that must be retained at this level:
+- stable topic identity
+- durable user facts, lasting decisions, constraints, and unresolved long-term state
+- specific qualifiers that change the meaning of retained information
+
+Information that may be compressed:
+- local event details, examples, chronology, and repeated explanations
+- short-lived intermediate states after the durable outcome is established
+
+Information that may be discarded:
+- pure social content without new information
+- one-off narration that does not alter durable topic or user state
+- redundant details fully represented by a more stable final statement
+
+Inferences that are forbidden:
+- personality, preference, ability, or permanence from isolated evidence
+- durability merely because information has been mentioned repeatedly
+
+Apply this policy conservatively. Compress representation, not supported meaning. Keep raw source identifiers and evidence provenance separate from the semantic representation.

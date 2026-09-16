@@ -1,0 +1,25 @@
+Target level: 2
+Level name: stable_topic_memory
+Level purpose: Represent a stable, reusable topic state for long-running memory operation.
+
+Information that must be retained at this level:
+- stable topic identity and the aspect that makes the topic coherent
+- durable explicit user information and important user state changes
+- decisions, constraints, unresolved issues, active state, and next steps needed for continuity
+- concrete values, dates, conditions, negation, and meaningful uncertainty
+
+Information that may be compressed:
+- local event narration and dialogue order
+- repeated examples, repeated wording, and obsolete intermediate wording
+- details that do not change the stable topic state or future continuity
+
+Information that may be discarded:
+- pure social content without new information
+- redundant details already represented by the final stable state
+- resolved intermediate narration when no valid fact or context remains
+
+Inferences that are forbidden:
+- long-term preferences, traits, or abilities from one event
+- a durable fact from an implication, assistant statement, or unsupported generalization
+
+Apply this policy conservatively. Compress representation, not supported meaning. Keep raw source identifiers and evidence provenance separate from the semantic representation.

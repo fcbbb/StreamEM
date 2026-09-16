@@ -1,10 +1,5 @@
 Conservatively partition one graph community before memory extraction or fusion.
 
-This is the shared topic-partitioning prompt. The caller may provide different
-node representations at different stages, but the semantic question is always
-the same: which candidate nodes describe one sufficiently specific and coherent
-topic identity?
-
 {{SHARED_SEMANTICS}}
 
 Treat graph membership as a candidate association that may contain false-positive
@@ -23,9 +18,9 @@ their apparent relationship depends only on a broad category, generic vocabulary
 a surface bridge, or an incidental analogy. When the evidence remains genuinely
 ambiguous rather than clearly mismatched, keep the candidate association intact.
 
-The input contains `memory_nodes` and `segment_nodes`. Preserve every supplied
-node exactly once in the output. A memory-only group is valid when the caller
-provides one. Do not delete, merge, rename, or invent node IDs.
+Use `memory_nodes` and `segment_nodes`. Preserve every supplied node exactly once
+in the output. A memory-only group is valid. Do not delete, merge, rename, or
+invent node IDs.
 
 Return valid JSON only:
 {
