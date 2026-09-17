@@ -41,6 +41,17 @@ class IncrementalPersistenceTests(unittest.TestCase):
             self.assertTrue((output_dir / "memory_state.json.delta.jsonl").is_file())
             snapshot = json.loads(state_file.read_text(encoding="utf-8"))
             self.assertEqual(set(snapshot["segments"]), {"s1"})
+            delta_rows = [
+                json.loads(row)
+                for row in (output_dir / "memory_state.json.delta.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertEqual(
+                set(delta_rows[-1]["delta"]["maps"]["segments"]["upsert"]),
+                {"s2"},
+            )
+            self.assertNotIn("trace", delta_rows[-1]["delta"]["append_lists"])
 
             recover_incremental_state(state_file)
             restored = DailyMemoryGraph.load(state_file, encoder=HashEncoder())
@@ -91,6 +102,46 @@ class IncrementalPersistenceTests(unittest.TestCase):
             )
             self.assertEqual(set(snapshot["segments"]), {"new"})
             self.assertFalse((output_dir / "memory_state.json.delta.jsonl").exists())
+
+    def test_logs_are_append_only_sidecars_not_part_of_incremental_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            state_file = output_dir / "memory_state.json"
+            pipeline = DailyMemoryGraph(encoder=HashEncoder())
+            runner = MemoryBuildRunner(
+                pipeline,
+                output_dir,
+                state_file=state_file,
+                snapshot_every=100,
+            )
+
+            pipeline._trace("first")
+            pipeline._audit_stage("test", "first", {"value": 1})
+            runner.persist()
+            snapshot = json.loads(state_file.read_text(encoding="utf-8"))
+            self.assertNotIn("trace", snapshot)
+            self.assertNotIn("stage_audit", snapshot)
+            self.assertNotIn("llm_errors", snapshot)
+            self.assertEqual(
+                len((output_dir / "trace.jsonl").read_text(encoding="utf-8").splitlines()),
+                1,
+            )
+
+            pipeline._trace("second")
+            pipeline._audit_stage("test", "second", {"value": 2})
+            runner.persist()
+            self.assertEqual(
+                len((output_dir / "trace.jsonl").read_text(encoding="utf-8").splitlines()),
+                2,
+            )
+            self.assertEqual(
+                len((output_dir / "stage_audit.jsonl").read_text(encoding="utf-8").splitlines()),
+                2,
+            )
+
+            restored = DailyMemoryGraph.load(state_file, encoder=HashEncoder())
+            self.assertEqual(len(restored.trace), 2)
+            self.assertEqual(len(restored.stage_audit), 2)
 
 
 if __name__ == "__main__":

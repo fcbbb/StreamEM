@@ -96,6 +96,131 @@ class DailyMemoryGraph:
         self.checkpoint_count = 0
         self.trace: list[dict[str, Any]] = []
         self.llm_errors: list[dict[str, Any]] = []
+        self._dirty_maps: dict[str, set[str]] = {
+            "segments": set(),
+            "memories": set(),
+            "boundaries": set(),
+        }
+        self._deleted_maps: dict[str, set[str]] = {
+            "segments": set(),
+            "memories": set(),
+            "boundaries": set(),
+        }
+        self._dirty_scalars: set[str] = set()
+        self._dirty_lists: set[str] = set()
+        self._dirty_graph = False
+        self._dirty_graph_nodes: set[str] | None = set()
+        self._incremental_list_offsets = {"skipped_segments": 0}
+
+    def _mark_map(self, name: str, *keys: str) -> None:
+        self._dirty_maps[name].update(str(key) for key in keys)
+
+    def _mark_deleted_map(self, name: str, *keys: str) -> None:
+        self._deleted_maps[name].update(str(key) for key in keys)
+
+    def _mark_scalar(self, *names: str) -> None:
+        self._dirty_scalars.update(names)
+
+    def _mark_list(self, *names: str) -> None:
+        self._dirty_lists.update(names)
+
+    def _mark_graph(self, *node_ids: str) -> None:
+        self._dirty_graph = True
+        if not node_ids:
+            self._dirty_graph_nodes = None
+        elif self._dirty_graph_nodes is not None:
+            self._dirty_graph_nodes.update(str(node_id) for node_id in node_ids)
+
+    def reset_incremental_tracking(self) -> None:
+        """Mark the current in-memory state as covered by a full snapshot."""
+
+        for keys in self._dirty_maps.values():
+            keys.clear()
+        for keys in self._deleted_maps.values():
+            keys.clear()
+        self._dirty_scalars.clear()
+        self._dirty_lists.clear()
+        self._dirty_graph = False
+        self._dirty_graph_nodes = set()
+        self._incremental_list_offsets = {
+            "skipped_segments": len(self.skipped_segments)
+        }
+
+    def take_incremental_state_delta(self) -> dict[str, Any]:
+        """Return only state mutations since the last full snapshot."""
+
+        delta: dict[str, Any] = {"maps": {}, "append_lists": {}, "replace": {}}
+        for name, keys in self._dirty_maps.items():
+            upsert = {
+                key: getattr(self, name)[key].to_dict()
+                for key in sorted(keys)
+                if key in getattr(self, name)
+            }
+            deleted = sorted(
+                key for key in self._deleted_maps[name]
+                if key not in getattr(self, name)
+            )
+            if upsert or deleted:
+                delta["maps"][name] = {"upsert": upsert, "delete": deleted}
+
+        if "skipped_segments" in self._dirty_lists:
+            start = self._incremental_list_offsets["skipped_segments"]
+            delta["append_lists"]["skipped_segments"] = {
+                "append": self.skipped_segments[start:]
+            }
+            self._incremental_list_offsets["skipped_segments"] = len(
+                self.skipped_segments
+            )
+
+        scalar_values = {
+            "active_memory_ids": sorted(self.active_memory_ids),
+            "pending_segment_ids": sorted(self.pending_segment_ids),
+            "cannot_link_memory_pairs": [
+                list(pair) for pair in sorted(self.cannot_link_memory_pairs)
+            ],
+            "current_date": self.current_date,
+            "last_checkpoint_date": self.last_checkpoint_date,
+            "checkpoint_count": self.checkpoint_count,
+            "relations": self.relations.to_dict(),
+        }
+        for name in sorted(self._dirty_scalars):
+            if name in scalar_values:
+                delta["replace"][name] = scalar_values[name]
+
+        if self._dirty_graph:
+            if self._dirty_graph_nodes is None:
+                delta["active_graph"] = self.active_graph.to_dict()
+                delta["layered_active_graph"] = self.layered_graph.to_dict()
+            else:
+                dirty_ids = self._dirty_graph_nodes
+
+                def graph_delta(graph: Any) -> dict[str, Any]:
+                    return {
+                        "nodes": {
+                            "upsert": {
+                                node_id: graph.nodes[node_id].to_dict()
+                                for node_id in sorted(dirty_ids)
+                                if node_id in graph.nodes
+                            },
+                            "delete": sorted(
+                                node_id
+                                for node_id in dirty_ids
+                                if node_id not in graph.nodes
+                            ),
+                        }
+                    }
+
+                delta["active_graph"] = graph_delta(self.active_graph)
+                delta["layered_active_graph"] = {
+                    "max_level": self.layered_graph.max_level,
+                    "graphs": {
+                        str(level): graph_delta(graph)
+                        for level, graph in sorted(self.layered_graph.graphs.items())
+                    },
+                }
+
+        self.reset_incremental_tracking()
+        return delta
 
     @staticmethod
     def _set_logical_mention_time(
@@ -143,9 +268,33 @@ class DailyMemoryGraph:
             "layered_active_graph": self.layered_graph.to_dict(),
         }
 
+    def _state_summary(self) -> dict[str, Any]:
+        """Return a compact checkpoint state summary for the audit log.
+
+        Checkpoint audits are retained for the whole run.  Embedding the full
+        graph state here makes each audit event grow with the pipeline and
+        causes every later persistence operation to revisit all prior states.
+        The durable state itself is still persisted by ``to_dict``; the audit
+        record only needs enough information to describe the transition.
+        """
+
+        return {
+            "current_date": self.current_date,
+            "last_checkpoint_date": self.last_checkpoint_date,
+            "checkpoint_count": self.checkpoint_count,
+            "segments": len(self.segments),
+            "memories": len(self.memories),
+            "active_memories": len(self.active_memory_ids),
+            "boundaries": len(self.boundaries),
+            "pending_segments": len(self.pending_segment_ids),
+            "active_nodes": len(self.active_graph.nodes),
+            "active_edges": self.active_graph.graph.number_of_edges(),
+        }
+
     def _date_transition(self, event_date: str) -> dict[str, Any] | None:
         if self.current_date is None:
             self.current_date = event_date
+            self._mark_scalar("current_date")
             return None
         if event_date < self.current_date:
             raise ValueError(
@@ -156,6 +305,7 @@ class DailyMemoryGraph:
         previous_date = self.current_date
         result = self.checkpoint(reason="event_date_change", checkpoint_date=previous_date)
         self.current_date = event_date
+        self._mark_scalar("current_date")
         return result
 
     def ingest_segment(self, value: SegmentRecord | dict[str, Any]) -> dict[str, Any]:
@@ -177,6 +327,7 @@ class DailyMemoryGraph:
                         "reason": "anchor_is_null",
                     }
                     self.skipped_segments.append(skipped)
+                    self._mark_list("skipped_segments")
                     self._trace("segment_skipped", **skipped)
                     self._audit_stage("segment_filter", "skipped", skipped)
                     return {"status": "skipped", **skipped}
@@ -206,8 +357,11 @@ class DailyMemoryGraph:
             return {"status": "duplicate", "segment_id": segment.segment_id}
         checkpoint = self._date_transition(segment.event_date)
         self.segments[segment.segment_id] = segment
+        self._mark_map("segments", segment.segment_id)
         self.pending_segment_ids.add(segment.segment_id)
+        self._mark_scalar("pending_segment_ids")
         self.active_graph.add_segment(segment.segment_id, segment.anchor)
+        self._mark_graph(segment.segment_id)
         self._trace(
             "segment_added",
             segment_id=segment.segment_id,
@@ -349,6 +503,7 @@ class DailyMemoryGraph:
                     "reason": "anchor_is_null",
                 }
                 self.skipped_segments.append(skipped)
+                self._mark_list("skipped_segments")
                 self._trace("segment_skipped", **skipped)
                 self._audit_stage("segment_filter", "skipped", skipped)
                 results.append({"status": "skipped", **skipped})
@@ -398,7 +553,9 @@ class DailyMemoryGraph:
         for segment_id in active_segment_ids:
             if segment_id not in boundary_scores and segment_id in self.boundaries:
                 self.boundaries.pop(segment_id, None)
+                self._mark_deleted_map("boundaries", segment_id)
                 self.segments[segment_id].status = "active"
+                self._mark_map("segments", segment_id)
         for segment_id, scores in boundary_scores.items():
             if segment_id not in self.segments:
                 continue
@@ -411,7 +568,9 @@ class DailyMemoryGraph:
                 last_checked_date=checkpoint_date,
                 attempts=(previous.attempts + 1 if previous else 1),
             )
+            self._mark_map("boundaries", segment_id)
             self.segments[segment_id].status = "boundary"
+            self._mark_map("segments", segment_id)
 
     def _archive_segments(self, segment_ids: set[str], status: str, memory_id: str | None) -> None:
         for segment_id in segment_ids:
@@ -419,7 +578,10 @@ class DailyMemoryGraph:
             segment.status = status  # type: ignore[assignment]
             segment.memory_id = memory_id
             self.boundaries.pop(segment_id, None)
+            self._mark_map("segments", segment_id)
+            self._mark_deleted_map("boundaries", segment_id)
         self.active_graph.remove_nodes(segment_ids)
+        self._mark_graph(*segment_ids)
 
     def _memory_direct_representations(self, memory: MemoryRecord) -> list[str]:
         direct_members = [
@@ -461,6 +623,7 @@ class DailyMemoryGraph:
 
     def _add_memory_to_layered_graphs(self, memory: MemoryRecord) -> None:
         self.active_memory_ids.add(memory.memory_id)
+        self._mark_scalar("active_memory_ids")
         for level in self._memory_graph_levels(memory):
             self.layered_graph.add_memory(
                 level,
@@ -469,9 +632,11 @@ class DailyMemoryGraph:
                 self._memory_direct_representations(memory),
                 memory.level,
             )
+        self._mark_graph(memory.memory_id)
 
     def _update_memory_in_layered_graphs(self, memory: MemoryRecord) -> None:
         self.active_memory_ids.add(memory.memory_id)
+        self._mark_scalar("active_memory_ids")
         for level in self._memory_graph_levels(memory):
             graph = self.layered_graph.graph(level)
             if memory.memory_id in graph.nodes:
@@ -490,6 +655,7 @@ class DailyMemoryGraph:
                     self._memory_direct_representations(memory),
                     memory.level,
                 )
+        self._mark_graph(memory.memory_id)
 
     def _remove_memory_from_layered_graphs(
         self, memory_ids: str | Iterable[str]
@@ -498,7 +664,9 @@ class DailyMemoryGraph:
             memory_ids = {memory_ids}
         memory_ids = set(memory_ids)
         self.active_memory_ids.difference_update(memory_ids)
+        self._mark_scalar("active_memory_ids")
         self.layered_graph.remove_nodes(memory_ids)
+        self._mark_graph(*memory_ids)
 
     def _run_purification_task(
         self,
@@ -760,6 +928,7 @@ class DailyMemoryGraph:
             updated = self._set_logical_mention_time(updated, checkpoint_date)
             fusion_decision = result["decision"]
             self.memories[owner_id] = updated
+            self._mark_map("memories", owner_id)
             self.topic_owner_router.register(updated)
             self._update_memory_in_layered_graphs(updated)
             self._archive_segments(segment_ids, "compressed", owner_id)
@@ -849,6 +1018,7 @@ class DailyMemoryGraph:
                 decision = result["decision"]
                 updated = self._set_logical_mention_time(updated, checkpoint_date)
                 self.memories[memory_id] = updated
+                self._mark_map("memories", memory_id)
                 self.topic_owner_router.register(updated)
                 self._update_memory_in_layered_graphs(updated)
                 self._archive_segments(segment_ids, "compressed", memory_id)
@@ -925,6 +1095,7 @@ class DailyMemoryGraph:
                 raise ValueError(f"generated duplicate memory_id {memory.memory_id}")
             memory = self._set_logical_mention_time(memory, checkpoint_date)
             self.memories[memory.memory_id] = memory
+            self._mark_map("memories", memory.memory_id)
             self.topic_owner_router.register(memory)
             self._archive_segments(segment_ids, "compressed", memory.memory_id)
             self._add_memory_to_layered_graphs(memory)
@@ -1200,6 +1371,7 @@ class DailyMemoryGraph:
                     continue
 
                 self.memories[promoted_memory.memory_id] = promoted_memory
+                self._mark_map("memories", promoted_memory.memory_id)
                 self._add_memory_to_layered_graphs(promoted_memory)
                 self._remove_memory_from_layered_graphs(source_ids)
                 self.topic_owner_router.replace(source_ids, promoted_memory)
@@ -1270,7 +1442,7 @@ class DailyMemoryGraph:
                 else self.active_graph.segment_ids()
             )
         )
-        state_before = self._state_snapshot()
+        state_before = self._state_summary()
         plan = self.planner.plan(self.active_graph, focus_node_ids=focus_node_ids)
         plan_output = {
             "communities": [
@@ -1302,6 +1474,7 @@ class DailyMemoryGraph:
             },
         )
         self.cannot_link_memory_pairs.update(plan.cannot_link_memory_pairs)
+        self._mark_scalar("cannot_link_memory_pairs")
         self._mark_boundaries(plan.boundaries, checkpoint_date)
         changes: list[dict[str, Any]] = []
         retry_ids: set[str] = set()
@@ -1397,6 +1570,10 @@ class DailyMemoryGraph:
                 removed_edges = self.active_graph.cut_cross_group_edges(
                     [set(purified.node_ids) for purified in purified_groups]
                 )
+                # Purification can add blocked edges even when no existing
+                # edge was removed, so this mutation requires a full graph
+                # delta (the blocked-edge set is graph-wide).
+                self._mark_graph()
                 if removed_edges:
                     self._audit_stage(
                         "community_purification",
@@ -1717,9 +1894,11 @@ class DailyMemoryGraph:
             )
 
         self.pending_segment_ids = retry_ids
+        self._mark_scalar("pending_segment_ids")
         promotion_result = self._run_promotions(checkpoint_date, changes)
         self.checkpoint_count += 1
         self.last_checkpoint_date = checkpoint_date
+        self._mark_scalar("checkpoint_count", "last_checkpoint_date")
         result = {
             "status": "ok",
             "checkpoint": self.checkpoint_count,
@@ -1747,7 +1926,7 @@ class DailyMemoryGraph:
                     "state_before": state_before,
                     "plan": plan_output,
                 },
-                "output": {"result": result, "state_after": self._state_snapshot()},
+                "output": {"result": result, "state_after": self._state_summary()},
             },
         )
         self._trace("checkpoint", **result)
@@ -1938,8 +2117,8 @@ class DailyMemoryGraph:
             "memory_relations_enabled": self.relations.enabled,
         }
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, include_logs: bool = True) -> dict[str, Any]:
+        payload = {
             "schema_version": self.schema_version,
             "config": self.config.to_dict(),
             "segments": {key: value.to_dict() for key, value in sorted(self.segments.items())},
@@ -1955,11 +2134,17 @@ class DailyMemoryGraph:
             "last_checkpoint_date": self.last_checkpoint_date,
             "checkpoint_count": self.checkpoint_count,
             "relations": self.relations.to_dict(),
-            "trace": self.trace,
-            "stage_audit": self.stage_audit,
-            "llm_errors": self.llm_errors,
             "stats": self.stats(),
         }
+        if include_logs:
+            payload.update(
+                {
+                    "trace": self.trace,
+                    "stage_audit": self.stage_audit,
+                    "llm_errors": self.llm_errors,
+                }
+            )
+        return payload
 
     def save(self, path: str | Path) -> None:
         target = Path(path)
@@ -2024,6 +2209,24 @@ class DailyMemoryGraph:
         instance.trace = list(payload.get("trace", []))
         instance.stage_audit = list(payload.get("stage_audit", []))
         instance.llm_errors = list(payload.get("llm_errors", []))
+        # Runner snapshots keep append-only logs beside the compact state
+        # file.  Preserve the old embedded-log format when loading legacy
+        # snapshots, and transparently restore external logs for new ones.
+        if not ("trace" in payload and "stage_audit" in payload and "llm_errors" in payload):
+            log_names = {
+                "trace": "trace.jsonl",
+                "stage_audit": "stage_audit.jsonl",
+                "llm_errors": "llm_errors.jsonl",
+            }
+            for field, filename in log_names.items():
+                log_path = Path(path).with_name(filename)
+                if not log_path.is_file():
+                    continue
+                rows: list[dict[str, Any]] = []
+                for line in log_path.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        rows.append(json.loads(line))
+                setattr(instance, field, rows)
         layered_graph_payload = payload.get("layered_active_graph")
         has_layered_graph = (
             isinstance(layered_graph_payload, dict)
@@ -2084,4 +2287,5 @@ class DailyMemoryGraph:
         unknown_active_segments = instance.active_graph.segment_ids() - set(instance.segments)
         if unknown_active_segments:
             raise ValueError(f"active graph has unknown segments: {sorted(unknown_active_segments)}")
+        instance.reset_incremental_tracking()
         return instance

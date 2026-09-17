@@ -359,6 +359,12 @@ class MemoryBuildRunner:
         self._incremental_writes = 0
         self._last_persisted_state: dict[str, Any] | None = None
         self._last_share_memory_report: dict[str, Any] | None = None
+        self._logs_initialized = False
+        self._log_offsets = {
+            "trace": 0,
+            "stage_audit": 0,
+            "llm_errors": 0,
+        }
         if self.share_memory_report_file.is_file():
             try:
                 value = json.loads(
@@ -376,7 +382,19 @@ class MemoryBuildRunner:
                         saved_state.get("_incremental_sequence", 0)
                     )
                     saved_state.pop("_incremental_sequence", None)
+                    for log_name in ("trace", "stage_audit", "llm_errors"):
+                        saved_state.pop(log_name, None)
                     self._last_persisted_state = saved_state
+                    self._logs_initialized = True
+                    self._log_offsets = {
+                        "trace": self._jsonl_row_count(self.output_dir / "trace.jsonl"),
+                        "stage_audit": self._jsonl_row_count(
+                            self.output_dir / "stage_audit.jsonl"
+                        ),
+                        "llm_errors": self._jsonl_row_count(
+                            self.output_dir / "llm_errors.jsonl"
+                        ),
+                    }
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 # Resume validation is handled by _run_memory_build before this
                 # runner is created; a fresh run deliberately ignores old state.
@@ -412,6 +430,34 @@ class MemoryBuildRunner:
                     rows.append(value)
         return rows
 
+    @staticmethod
+    def _jsonl_row_count(path: Path) -> int:
+        if not path.is_file():
+            return 0
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+
+    def _append_new_logs(self) -> None:
+        """Persist append-only logs without rebuilding their full history."""
+
+        log_files = {
+            "trace": self.output_dir / "trace.jsonl",
+            "stage_audit": self.output_dir / "stage_audit.jsonl",
+            "llm_errors": self.output_dir / "llm_errors.jsonl",
+        }
+        if not self._logs_initialized:
+            for name, path in log_files.items():
+                write_jsonl(path, getattr(self.pipeline, name))
+                self._log_offsets[name] = len(getattr(self.pipeline, name))
+            self._logs_initialized = True
+            return
+
+        for name, path in log_files.items():
+            rows = getattr(self.pipeline, name)
+            start = min(self._log_offsets[name], len(rows))
+            for row in rows[start:]:
+                append_jsonl(path, row)
+            self._log_offsets[name] = len(rows)
+
     def _upsert_share_memory_labels(self, rows: Iterable[dict[str, Any]]) -> None:
         by_id = {
             str(row.get("label_id")): dict(row)
@@ -438,8 +484,6 @@ class MemoryBuildRunner:
             self.output_dir / "boundaries.jsonl",
             (boundary.to_dict() for boundary in self.pipeline.boundaries.values()),
         )
-        write_jsonl(self.output_dir / "trace.jsonl", self.pipeline.trace)
-        write_jsonl(self.output_dir / "stage_audit.jsonl", self.pipeline.stage_audit)
         write_jsonl(self.share_memory_attribution_file, build_share_memory_attributions(
             self.share_memory_labels, self.pipeline
         ))
@@ -447,7 +491,10 @@ class MemoryBuildRunner:
 
     def persist(self, *, force_snapshot: bool = False) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        current_state = self.pipeline.to_dict()
+        # Logs are append-only sidecars.  The state snapshot and its journal
+        # contain only recoverable graph state, never the accumulated audit
+        # history.
+        self._append_new_logs()
         self._persist_sequence += 1
         self._incremental_writes += 1
         write_snapshot = (
@@ -456,10 +503,12 @@ class MemoryBuildRunner:
             or self._incremental_writes >= self.snapshot_every
         )
         if write_snapshot:
+            current_state = self.pipeline.to_dict(include_logs=False)
             current_state["_incremental_sequence"] = self._persist_sequence
             atomic_write_json(self.state_file, current_state)
             self.state_journal_file.unlink(missing_ok=True)
             self._incremental_writes = 0
+            self.pipeline.reset_incremental_tracking()
             self._last_persisted_state = dict(current_state)
             self._last_persisted_state.pop("_incremental_sequence", None)
         else:
@@ -468,10 +517,9 @@ class MemoryBuildRunner:
                 {
                     "schema_version": INCREMENTAL_STATE_SCHEMA,
                     "sequence": self._persist_sequence,
-                    "delta": make_state_delta(self._last_persisted_state, current_state),
+                    "delta": self.pipeline.take_incremental_state_delta(),
                 },
             )
-            self._last_persisted_state = current_state
 
         # Labels are small and are kept current for resume. The large derived
         # exports are materialized only with a snapshot or at finalization.
@@ -509,6 +557,7 @@ class MemoryBuildRunner:
                 "state_journal_file": str(self.state_journal_file.resolve()),
                 "progress_file": str(self.progress_file.resolve()),
                 "stage_audit_file": str((self.output_dir / "stage_audit.jsonl").resolve()),
+                "llm_errors_file": str((self.output_dir / "llm_errors.jsonl").resolve()),
                 "share_memory_labels_file": str(self.share_memory_labels_file.resolve()),
                 "share_memory_attribution_file": str(
                     self.share_memory_attribution_file.resolve()
