@@ -21,11 +21,9 @@ class DailyGraphConfig:
     retrieval_rrf_k: int = 60
     postprocess_workers: int = 1
     owner_candidate_top_k: int = 5
-    # The cross-level owner path is intentionally disabled until its
-    # reactivation semantics are settled.  When false, recalled L2/L3
-    # candidates cannot receive provisional-L1 fusion; the group falls back
-    # to the ordinary L1 path.
-    enable_owner_bypass: bool = False
+    # Adjacent-level owner fusion is the default lifecycle. This switch is
+    # retained as an explicit escape hatch for experiments or compatibility.
+    enable_owner_bypass: bool = True
     promotion_inactivity_days: tuple[int, ...] = (7, 30)
 
     def __post_init__(self) -> None:

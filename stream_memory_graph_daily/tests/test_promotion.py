@@ -8,7 +8,7 @@ import unittest
 from typing import Any
 
 from stream_memory_graph_daily.config import DailyGraphConfig
-from stream_memory_graph_daily.models import MemoryRecord
+from stream_memory_graph_daily.models import MemoryRecord, SegmentRecord
 from stream_memory_graph_daily.pipeline import DailyMemoryGraph
 
 
@@ -24,6 +24,31 @@ class PromotionLLM:
                 "user_memories": memory["user_memories"],
             }
         raise AssertionError(f"unexpected promotion prompt: {system_prompt[:80]}")
+
+
+class AdjacentOwnerPromotionLLM(PromotionLLM):
+    def complete(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+        if system_prompt.startswith("You decide whether one provisional L1"):
+            return {"owner_memory_id": "owner-l3", "reason": "same_topic"}
+        if system_prompt.startswith("You maintain structured memory"):
+            payload = json.loads(user_prompt.split("INPUT DATA\n", 1)[1])
+            existing = payload["existing_memory"]
+            source_ids = payload["new_group"]["source_segment_ids"]
+            return {
+                "topic": existing["topic"],
+                "summary": "The long-term topic was updated.",
+                "operations": [{
+                    "operation": "add",
+                    "field": "user_memories",
+                    "value": {
+                        "type": "update",
+                        "content": "The lower-level topic remains active.",
+                    },
+                    "source_segment_ids": source_ids,
+                }],
+                "no_op_reason": None,
+            }
+        return super().complete(system_prompt, user_prompt)
 
 
 class PromotionTests(unittest.TestCase):
@@ -184,6 +209,65 @@ class PromotionTests(unittest.TestCase):
             reason="promotion_test_follow_up",
         )
         self.assertEqual(next_result["status"], "no_pending")
+
+    def test_new_l2_wakes_only_l3_owner_and_updates_owner_lifecycle(self) -> None:
+        pipeline = DailyMemoryGraph(
+            llm=AdjacentOwnerPromotionLLM(),
+            config=DailyGraphConfig(
+                enable_owner_bypass=True,
+                promotion_inactivity_days=(7, 30),
+            ),
+        )
+        source = MemoryRecord(
+            "old-l2",
+            "Research project",
+            "The project has a stable state.",
+            user_memories=[{
+                "type": "state",
+                "content": "The research project is established.",
+            }],
+            source_segments=["source-segment"],
+            level=2,
+            last_mentioned_at="2025-01-01",
+        )
+        owner = MemoryRecord(
+            "owner-l3",
+            "Research project",
+            "The long-term project state.",
+            user_memories=[{
+                "type": "state",
+                "content": "The project is long-running.",
+            }],
+            level=3,
+            last_mentioned_at="2024-01-01",
+        )
+        pipeline.memories = {source.memory_id: source, owner.memory_id: owner}
+        pipeline.segments["source-segment"] = SegmentRecord(
+            "source-segment",
+            "The project is established.",
+            "Research project",
+            "2025-01-01",
+            status="compressed",
+            memory_id=source.memory_id,
+        )
+        pipeline._add_memory_to_layered_graphs(source)
+        pipeline._add_memory_to_layered_graphs(owner)
+        pipeline.topic_owner_router.rebuild((source, owner))
+        pipeline.planner.detect_nodes = lambda _active, node_ids: [
+            {node_id} for node_id in sorted(node_ids)
+        ]
+
+        changes: list[dict[str, Any]] = []
+        result = pipeline._run_promotions("2025-02-10", changes)
+
+        self.assertEqual(result["candidate_count"], 1)
+        self.assertEqual(
+            [change["action"] for change in changes], ["memory_owner_fused"]
+        )
+        self.assertEqual(pipeline.active_memory_ids, {"owner-l3"})
+        self.assertEqual(pipeline.memories["owner-l3"].last_mentioned_at, "2025-02-10")
+        self.assertNotIn("old-l2", pipeline.topic_owner_router.memory_ids())
+        self.assertNotIn("old-l2", pipeline.layered_graph.memory_ids())
 
 
 if __name__ == "__main__":

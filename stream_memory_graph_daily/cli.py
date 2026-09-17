@@ -47,11 +47,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--new-memory-threshold", type=float, default=0.5)
     parser.add_argument("--assignment-min-support", type=float, default=0.35)
     parser.add_argument("--assignment-margin", type=float, default=0.08)
-    parser.add_argument(
+    bypass_group = parser.add_mutually_exclusive_group()
+    bypass_group.add_argument(
         "--enable-owner-bypass",
+        dest="enable_owner_bypass",
         action="store_true",
-        help="enable the experimental provisional-L1 to active-L2/L3 fusion path",
+        help="enable adjacent-level lower-memory to upper-owner fusion",
     )
+    bypass_group.add_argument(
+        "--disable-owner-bypass",
+        dest="enable_owner_bypass",
+        action="store_false",
+        help="disable adjacent-level owner fusion and use ordinary promotion",
+    )
+    parser.set_defaults(enable_owner_bypass=True)
     return parser
 
 

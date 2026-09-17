@@ -716,14 +716,20 @@ class DailyMemoryGraph:
         purification_group_id: str,
         decision: OwnerDecision,
         result: dict[str, Any],
+        source_memory_ids: Iterable[str] = (),
     ) -> bool:
-        """Apply fast L1→active-L2+ fusion; return false for ordinary fallback."""
+        """Apply one-level owner fusion; return false for lower-level fallback."""
 
         segment_ids = set(provisional.source_segments)
+        source_memory_ids = {str(memory_id) for memory_id in source_memory_ids}
         try:
             if result.get("kind") == "error":
                 raise result["error"]
             owner = self.memories[owner_id]
+            if owner.level != provisional.level + 1:
+                raise ValueError(
+                    "owner fusion must target exactly one level above the provisional memory"
+                )
             updated = result["updated"]
             updated = self._set_logical_mention_time(updated, checkpoint_date)
             fusion_decision = result["decision"]
@@ -731,6 +737,10 @@ class DailyMemoryGraph:
             self.topic_owner_router.register(updated)
             self._update_memory_in_layered_graphs(updated)
             self._archive_segments(segment_ids, "compressed", owner_id)
+            if source_memory_ids:
+                self._remove_memory_from_layered_graphs(source_memory_ids)
+                for memory_id in source_memory_ids:
+                    self.topic_owner_router.remove(memory_id)
             self._audit_stage(
                 "memory_apply",
                 "owner_fused",
@@ -740,6 +750,9 @@ class DailyMemoryGraph:
                     "parent_community_id": parent_community_id,
                     "purification_group_id": purification_group_id,
                     "owner_decision": decision.to_dict(),
+                    "source_level": provisional.level,
+                    "target_level": owner.level,
+                    "source_memory_ids": sorted(source_memory_ids),
                     "input": {
                         "owner_memory": owner.to_dict(),
                         "provisional_l1": provisional.to_dict(),
@@ -759,6 +772,9 @@ class DailyMemoryGraph:
                     "action": "memory_owner_fused",
                     "memory_id": owner_id,
                     "owner_decision": decision.to_dict(),
+                    "source_level": provisional.level,
+                    "target_level": updated.level,
+                    "source_memory_ids": sorted(source_memory_ids),
                     "decision": fusion_decision["decision"],
                     "operations": fusion_decision["operations"],
                     "segment_ids": sorted(segment_ids),
@@ -779,7 +795,7 @@ class DailyMemoryGraph:
             }
             self.llm_errors.append(error)
             self._audit_stage("memory_apply", "owner_fusion_error", error)
-            changes.append({**error, "action": "owner_fusion_failed_fallback_to_l1"})
+            changes.append({**error, "action": "owner_fusion_failed_fallback_to_lower_level"})
             return False
 
     def _apply_memory_result(
@@ -1074,6 +1090,89 @@ class DailyMemoryGraph:
                     changes.append({**error, "action": "promotion_failed"})
                     continue
 
+                # A newly materialized lower-level memory can wake only the
+                # immediately higher level.  If that owner exists, fuse into
+                # it and retire the lower-level source memories; otherwise
+                # keep the ordinary one-level promotion result.
+                bypassed = False
+                if (
+                    self.config.enable_owner_bypass
+                    and candidate.source_level == 2
+                    and len(source_ids) == 1
+                ):
+                    # For an existing L2 promotion candidate, the L2 itself
+                    # is the lower-level input.  The generated L3 below is
+                    # only the ordinary fallback and must not be routed as a
+                    # same-level provisional memory.
+                    routing_provisional = self.memories[next(iter(source_ids))]
+                    target_level = routing_provisional.level + 1
+                    recall_rows = self.topic_owner_router.candidates(
+                        routing_provisional.topic,
+                        summary=routing_provisional.summary,
+                        direct_members=(
+                            str(member["representation"])
+                            for member in routing_provisional.direct_members
+                        ),
+                        k=self.config.owner_candidate_top_k,
+                        min_level=target_level,
+                        max_level=target_level,
+                    )
+                    if recall_rows:
+                        routing_audit: list[dict[str, Any]] = []
+                        owner_decision = self.topic_owner_router.decide(
+                            routing_provisional,
+                            self.memories,
+                            llm=self.llm,
+                            top_k=self.config.owner_candidate_top_k,
+                            target_level=target_level,
+                            audit_sink=routing_audit.append,
+                        )
+                        for audit in routing_audit:
+                            self._audit_stage(
+                                "owner_routing",
+                                "llm_call" if "request" in audit else "decided",
+                                {
+                                    "checkpoint_date": checkpoint_date,
+                                    "parent_community_id": (
+                                        f"promotion:{candidate.source_level}"
+                                    ),
+                                    "purification_group_id": promoted.get("group_id"),
+                                    **audit,
+                                },
+                            )
+                        self._trace(
+                            "owner_routing",
+                            provisional_memory_id=routing_provisional.memory_id,
+                            owner_memory_id=owner_decision.owner_memory_id,
+                            reason=owner_decision.reason,
+                            source_level=routing_provisional.level,
+                            target_level=target_level,
+                            candidates=[row["memory_id"] for row in recall_rows],
+                        )
+                        owner_id = owner_decision.owner_memory_id
+                        owner = self.memories.get(owner_id) if owner_id else None
+                        if owner is not None:
+                            owner_result, owner_audits = self._run_owner_fusion_task(
+                                (owner_id, owner, routing_provisional)
+                            )
+                            self._append_task_audits(owner_audits)
+                            bypassed = self._apply_owner_fusion_result(
+                                routing_provisional,
+                                owner_id,
+                                checkpoint_date,
+                                changes,
+                                set(),
+                                parent_community_id=(
+                                    f"promotion:{candidate.source_level}"
+                                ),
+                                purification_group_id=str(promoted.get("group_id", "")),
+                                decision=owner_decision,
+                                result=owner_result,
+                                source_memory_ids=source_ids,
+                            )
+                if bypassed:
+                    continue
+
                 self.memories[promoted_memory.memory_id] = promoted_memory
                 self._add_memory_to_layered_graphs(promoted_memory)
                 self._remove_memory_from_layered_graphs(source_ids)
@@ -1354,18 +1453,10 @@ class DailyMemoryGraph:
                 ]
                 parent_context = (group.community_id, purified.group_id)
 
-                # Raw score is only a gate for the LLM comparison. The query
-                # uses the temporary community anchors so that we do not pay
-                # for provisional extraction when no active L2+ is recallable.
-                recall_rows = []
+                # Always build the lower-level representation first.  Owner
+                # routing is based on the complete provisional L1, rather
+                # than on a raw-segment similarity pre-gate.
                 if self.config.enable_owner_bypass:
-                    recall_rows = self.topic_owner_router.candidates(
-                        " ".join(segment.anchor for segment in purified_segments),
-                        direct_members=[segment.anchor for segment in purified_segments],
-                        k=self.config.owner_candidate_top_k,
-                        min_level=2,
-                    )
-                if self.config.enable_owner_bypass and recall_rows:
                     provisional_result, provisional_audits = self._run_provisional_task(
                         (purified_group, purified_segments)
                     )
@@ -1378,6 +1469,7 @@ class DailyMemoryGraph:
                             self.memories,
                             llm=self.llm,
                             top_k=self.config.owner_candidate_top_k,
+                            target_level=2,
                             audit_sink=routing_audit.append,
                         )
                         for audit in routing_audit:
@@ -1396,7 +1488,10 @@ class DailyMemoryGraph:
                             provisional_memory_id=provisional.memory_id,
                             owner_memory_id=owner_decision.owner_memory_id,
                             reason=owner_decision.reason,
-                            candidates=[row["memory_id"] for row in recall_rows],
+                            candidates=[
+                                row["memory_id"]
+                                for row in owner_decision.candidates
+                            ],
                         )
                         if owner_decision.owner_memory_id is not None:
                             owner_id = owner_decision.owner_memory_id
@@ -1450,8 +1545,8 @@ class DailyMemoryGraph:
                             source=purified_group.source,
                         )
 
-                # No L2+ candidate, an invalid owner decision, or a routing/
-                # fusion failure all use the existing ordinary L1 path.
+                # No adjacent L2 owner, an invalid owner decision, or a
+                # routing/fusion failure all use the existing ordinary L1 path.
                 normal_memory_ids = {
                     memory_id
                     for memory_id in purified_group.memory_ids

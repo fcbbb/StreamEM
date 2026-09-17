@@ -88,6 +88,39 @@ class TopicOwnerRouterTests(unittest.TestCase):
         self.assertEqual([row["memory_id"] for row in decision.candidates], ["l2"])
         self.assertEqual(len(llm.calls), 1)
 
+    def test_decide_never_skips_from_l1_to_l3(self) -> None:
+        owner = MemoryRecord("l3", "deployment", "Long-term deployment", level=3)
+        provisional = MemoryRecord("p", "deployment", "New deployment event", level=1)
+        self.router.register(owner)
+        llm = RoutingLLM({"owner_memory_id": "l3", "reason": "same_topic"})
+
+        decision = self.router.decide(
+            provisional,
+            {"l3": owner},
+            llm=llm,
+        )
+
+        self.assertIsNone(decision.owner_memory_id)
+        self.assertEqual(decision.reason, "new_topic")
+        self.assertEqual(len(llm.calls), 0)
+
+    def test_l2_routes_only_to_l3(self) -> None:
+        owner_l2 = MemoryRecord("l2", "deployment", "Stable deployment", level=2)
+        owner_l3 = MemoryRecord("l3", "deployment", "Long-term deployment", level=3)
+        provisional = MemoryRecord("p", "deployment", "New stable event", level=2)
+        for memory in (owner_l2, owner_l3):
+            self.router.register(memory)
+        llm = RoutingLLM({"owner_memory_id": "l3", "reason": "same_topic"})
+
+        decision = self.router.decide(
+            provisional,
+            {"l2": owner_l2, "l3": owner_l3},
+            llm=llm,
+        )
+
+        self.assertEqual(decision.owner_memory_id, "l3")
+        self.assertEqual([row["memory_id"] for row in decision.candidates], ["l3"])
+
     def test_invalid_owner_output_falls_back_to_no_owner(self) -> None:
         owner = MemoryRecord("l2", "deployment", "Deployment workflow", level=2)
         provisional = MemoryRecord("p", "deployment", "New deployment event", level=1)

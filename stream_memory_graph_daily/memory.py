@@ -609,7 +609,7 @@ class MemoryService:
         *,
         target_level: int | None = None,
     ) -> tuple[MemoryRecord, dict[str, Any]]:
-        """Fuse only the semantic contents of a provisional L1 memory."""
+        """Fuse only the semantic contents of a provisional lower-level memory."""
 
         return self.fuse(
             community_id,

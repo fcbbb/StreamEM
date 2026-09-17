@@ -100,10 +100,10 @@ def _render_memory_template(
             if target_level < 2:
                 raise ValueError("provisional L1 fusion needs target level >= 2")
             input_rules = (
-                "The new_group contains a compressed provisional_l1 memory and its "
-                "source_segment_ids. The provisional L1 is the only semantic input; "
-                "do not request or infer details from original segments. The source IDs "
-                "are provenance only."
+                "The new_group contains one compressed lower-level memory (kept under "
+                "the compatibility field provisional_l1) and its source_segment_ids. "
+                "That lower-level memory is the only semantic input; do not request or "
+                "infer details from original segments. The source IDs are provenance only."
             )
         else:
             raise ValueError(f"unsupported fusion input mode: {input_mode}")

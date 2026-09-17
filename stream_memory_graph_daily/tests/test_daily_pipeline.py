@@ -259,12 +259,14 @@ class DailyPipelineTests(unittest.TestCase):
         self.assertNotIn("owner-l2", pipeline.layered_graph.graph(1).nodes)
         self.assertEqual(pipeline.active_memory_ids, {"owner-l2"})
 
-    def test_owner_bypass_is_disabled_by_default(self) -> None:
+    def test_owner_bypass_can_be_disabled_explicitly(self) -> None:
         llm = OwnerMemoryFakeLLM()
         pipeline = DailyMemoryGraph(
             llm=llm,
             encoder=VectorEncoder(self.vectors),
-            config=self.config,
+            config=DailyGraphConfig(
+                **{**self.config.to_dict(), "enable_owner_bypass": False}
+            ),
         )
         owner = MemoryRecord(
             memory_id="owner-l2",

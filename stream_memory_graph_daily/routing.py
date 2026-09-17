@@ -115,9 +115,12 @@ class TopicOwnerRouter:
         direct_members: Iterable[str] | None = None,
         k: int = 10,
         min_level: int | None = None,
+        max_level: int | None = None,
     ) -> list[dict[str, Any]]:
         if k < 1:
             return []
+        if min_level is not None and max_level is not None and min_level > max_level:
+            raise ValueError("min_level must not be greater than max_level")
         member_values = tuple(
             str(value).strip()
             for value in (direct_members or [])
@@ -130,6 +133,8 @@ class TopicOwnerRouter:
         rows: list[dict[str, Any]] = []
         for signature in self.signatures.values():
             if min_level is not None and signature.level < min_level:
+                continue
+            if max_level is not None and signature.level > max_level:
                 continue
             semantic_score = float(np.dot(query_vector, signature.vector))
             keyword_score = (
@@ -177,9 +182,17 @@ class TopicOwnerRouter:
         *,
         llm: JsonLLM | None,
         top_k: int = 5,
+        target_level: int | None = None,
         audit_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> OwnerDecision:
-        """Recall active L2+ candidates, then ask one LLM to compare them all."""
+        """Recall only the adjacent upper-level candidates and compare them."""
+
+        if target_level is None:
+            target_level = provisional.level + 1
+        if target_level != provisional.level + 1:
+            raise ValueError(
+                "owner routing target_level must be exactly one level above the provisional memory"
+            )
 
         candidates = self.candidates(
             provisional.topic,
@@ -189,7 +202,8 @@ class TopicOwnerRouter:
                 for member in provisional.direct_members
             ),
             k=top_k,
-            min_level=2,
+            min_level=target_level,
+            max_level=target_level,
         )
         candidate_ids = {str(row["memory_id"]) for row in candidates}
         if not candidates:
@@ -210,6 +224,8 @@ class TopicOwnerRouter:
         ]
         payload = {
             "provisional_l1": self._memory_prompt_dict(provisional),
+            "source_level": provisional.level,
+            "target_level": target_level,
             "candidates": candidate_payload,
         }
         raw: Any = None

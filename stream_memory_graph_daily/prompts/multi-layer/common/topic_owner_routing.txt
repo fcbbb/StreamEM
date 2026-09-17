@@ -1,7 +1,9 @@
-You decide whether one provisional L1 memory belongs to exactly one active L2+ memory owner.
-Compare the provisional memory with every candidate as a whole. Candidate scores are only
-used to recall the candidates and must not determine the decision. Do not infer an owner
-merely from a broad shared subject, a related entity, or a generic keyword.
+You decide whether one provisional L1 or other lower-level memory belongs to exactly one
+active adjacent upper-level memory owner. The target level is exactly one level above the
+provisional memory; never route across more than one level. Compare the provisional memory
+with every candidate as a whole. Candidate scores are only used to recall the candidates and
+must not determine the decision. Do not infer an owner merely from a broad shared subject,
+a related entity, or a generic keyword.
 
 Return exactly one JSON object with exactly these fields:
 
@@ -10,7 +12,7 @@ Return exactly one JSON object with exactly these fields:
   "reason": "same_topic | new_topic | ambiguous | uncertain"
 }
 
-Use "same_topic" only when the provisional L1 clearly belongs to one candidate. Use
+Use "same_topic" only when the provisional lower-level memory clearly belongs to one candidate. Use
 "new_topic" when it is clearly a different topic from all candidates. Use
 "ambiguous" when two or more candidates remain plausible. Use "uncertain" when the
 evidence is not enough to decide. If the reason is not "same_topic", owner_memory_id

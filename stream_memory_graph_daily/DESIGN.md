@@ -171,8 +171,9 @@ G3：active L3 memory peer graph，预留给后续更高层晋升
 L0 segment
   → L0 社区检测与纯化
   → 形成 provisional L1
-  → 旁路默认关闭；高层候选仅作为后续再激活设计的预留上下文
+  → 旁路只查询 L2；命中唯一 owner 后直接融合并更新 L2 生命周期
   → 统一走普通 L1 创建或融合
   → 后续 checkpoint 按 last_mentioned_at 独立检查时间晋升
       → L1 → L2
+      → 旁路只查询 L3；命中唯一 owner 后直接融合并更新 L3 生命周期
       → L2 → L3
