@@ -182,3 +182,16 @@ LOCAL_OPENAI_BASE_URL
 `LOCAL_OPENAI_BASE_URL` 可以填写完整的 `/chat/completions` 地址，客户端会自动转换为 API 根地址。
 
 HTTP 客户端默认读取系统代理环境变量。连接本机或不需要代理的兼容接口时添加 `--no-proxy`；该参数会让回答、Judge 以及记忆构建中的全部 LLM 请求使用 `trust_env=False`。
+
+
+
+
+
+命令：
+uv run .\stream_memory_graph_daily\evaluate\conversation_to_memory.py `
+  --conversation-directory .\Memora\data\monthly\academic_researcher\conversations `
+  --output-dir .\stream_memory_graph_daily\evaluate\artifacts\monthly_memory\academic_researcher `
+  --preprocess-workers 16  --postprocess-workers 16`
+  --save-every 10 `
+  --use-cache `
+  --no-proxy

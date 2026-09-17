@@ -171,9 +171,8 @@ G3：active L3 memory peer graph，预留给后续更高层晋升
 L0 segment
   → L0 社区检测与纯化
   → 形成 provisional L1
-  → 召回最多 5 个 active L2/L3 owner 候选
-      → LLM 确认唯一 owner：快速融合到该 L2/L3
-      → 无候选/不唯一/不确定/融合失败：走普通 L1 创建或融合
+  → 旁路默认关闭；高层候选仅作为后续再激活设计的预留上下文
+  → 统一走普通 L1 创建或融合
   → 后续 checkpoint 按 last_mentioned_at 独立检查时间晋升
       → L1 → L2
       → L2 → L3

@@ -47,6 +47,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--new-memory-threshold", type=float, default=0.5)
     parser.add_argument("--assignment-min-support", type=float, default=0.35)
     parser.add_argument("--assignment-margin", type=float, default=0.08)
+    parser.add_argument(
+        "--enable-owner-bypass",
+        action="store_true",
+        help="enable the experimental provisional-L1 to active-L2/L3 fusion path",
+    )
     return parser
 
 
@@ -59,6 +64,7 @@ def main() -> None:
         new_memory_threshold=args.new_memory_threshold,
         assignment_min_support=args.assignment_min_support,
         assignment_margin=args.assignment_margin,
+        enable_owner_bypass=args.enable_owner_bypass,
     )
     encoder = load_encoder(args.encoder_model, args.device)
     llm = None if args.no_llm else OpenAIJsonLLM(

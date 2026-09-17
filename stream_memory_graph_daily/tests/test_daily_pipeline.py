@@ -216,12 +216,17 @@ class DailyPipelineTests(unittest.TestCase):
         self.assertEqual(fusion_change["topic_source_segment_ids"], [])
         self.assertEqual(fusion_change["summary_source_segment_ids"], ["s2"])
 
-    def test_provisional_l1_is_routed_to_active_l2_owner(self) -> None:
+    def test_provisional_l1_is_routed_to_active_l2_owner_when_enabled(self) -> None:
         llm = OwnerMemoryFakeLLM()
         pipeline = DailyMemoryGraph(
             llm=llm,
             encoder=VectorEncoder(self.vectors),
-            config=self.config,
+            config=DailyGraphConfig(
+                **{
+                    **self.config.to_dict(),
+                    "enable_owner_bypass": True,
+                }
+            ),
         )
         owner = MemoryRecord(
             memory_id="owner-l2",
@@ -253,6 +258,39 @@ class DailyPipelineTests(unittest.TestCase):
         self.assertIn("owner-l2", pipeline.layered_graph.graph(2).nodes)
         self.assertNotIn("owner-l2", pipeline.layered_graph.graph(1).nodes)
         self.assertEqual(pipeline.active_memory_ids, {"owner-l2"})
+
+    def test_owner_bypass_is_disabled_by_default(self) -> None:
+        llm = OwnerMemoryFakeLLM()
+        pipeline = DailyMemoryGraph(
+            llm=llm,
+            encoder=VectorEncoder(self.vectors),
+            config=self.config,
+        )
+        owner = MemoryRecord(
+            memory_id="owner-l2",
+            topic="Coffee spending",
+            summary="The user tracks coffee purchases.",
+            level=2,
+        )
+        pipeline.memories[owner.memory_id] = owner
+        pipeline.topic_owner_router.register(owner)
+        pipeline._add_memory_to_layered_graphs(owner)
+
+        pipeline.ingest_segment({
+            "segment_id": "new-coffee",
+            "text": "The user bought another coffee.",
+            "anchor": "coffee purchase",
+            "event_date": "2025-06-01",
+        })
+        result = pipeline.finalize()
+
+        self.assertEqual(result["changes"][0]["action"], "memory_created")
+        created_ids = set(pipeline.memories) - {"owner-l2"}
+        self.assertEqual(len(created_ids), 1)
+        created_memory = pipeline.memories[next(iter(created_ids))]
+        self.assertIn("new-coffee", created_memory.source_segments)
+        self.assertIn("owner-l2", pipeline.memories)
+        self.assertEqual(llm.fusions, 0)
 
     def test_no_owner_keeps_provisional_l1_in_normal_layered_flow(self) -> None:
         pipeline = DailyMemoryGraph(

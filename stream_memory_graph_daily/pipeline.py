@@ -990,11 +990,25 @@ class DailyMemoryGraph:
                 self.llm_errors.append(error)
                 self._audit_stage("memory_promotion", "candidate_error", error)
 
+        promotion_tasks = [(candidate, memory_snapshot) for candidate in candidates]
+        if self.config.postprocess_workers > 1 and len(promotion_tasks) > 1:
+            # Promotion tasks only read the checkpoint snapshot.  Keep all
+            # graph/state mutations in the commit loop below, but overlap the
+            # expensive high-level purification/extraction requests just like
+            # the L0/L1 post-processing stages above.
+            with ThreadPoolExecutor(
+                max_workers=self.config.postprocess_workers
+            ) as executor:
+                promotion_results_raw = list(
+                    executor.map(self._run_promotion_task, promotion_tasks)
+                )
+        else:
+            promotion_results_raw = [
+                self._run_promotion_task(task) for task in promotion_tasks
+            ]
+
         promotion_results: list[dict[str, Any]] = []
-        for candidate in candidates:
-            result, audit_events = self._run_promotion_task(
-                (candidate, memory_snapshot)
-            )
+        for candidate, (result, audit_events) in zip(candidates, promotion_results_raw):
             self._append_task_audits(audit_events)
             promotion_results.append(
                 {
@@ -1343,13 +1357,15 @@ class DailyMemoryGraph:
                 # Raw score is only a gate for the LLM comparison. The query
                 # uses the temporary community anchors so that we do not pay
                 # for provisional extraction when no active L2+ is recallable.
-                recall_rows = self.topic_owner_router.candidates(
-                    " ".join(segment.anchor for segment in purified_segments),
-                    direct_members=[segment.anchor for segment in purified_segments],
-                    k=self.config.owner_candidate_top_k,
-                    min_level=2,
-                )
-                if recall_rows:
+                recall_rows = []
+                if self.config.enable_owner_bypass:
+                    recall_rows = self.topic_owner_router.candidates(
+                        " ".join(segment.anchor for segment in purified_segments),
+                        direct_members=[segment.anchor for segment in purified_segments],
+                        k=self.config.owner_candidate_top_k,
+                        min_level=2,
+                    )
+                if self.config.enable_owner_bypass and recall_rows:
                     provisional_result, provisional_audits = self._run_provisional_task(
                         (purified_group, purified_segments)
                     )
