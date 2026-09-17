@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1280" viewBox="0 0 1800 1280" role="img" aria-labelledby="title desc">
+  <title id="title">图 1 时间驱动的分层记忆图：G0、上层图与旁路</title>
+  <desc id="desc">G0 同时包含 L0 事件片段和 active L1 boundary memories；G1、G2、G3 是各层 memory 的同层 peer graph；TopicOwnerRouter 提供 L0 到 L2、L1 到 L3 的上层旁路。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#345d7e"/></marker>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#89959e"/></marker>
+    <style>
+      .title{font-family:'Noto Serif CJK SC','SimSun','STSong',serif;font-size:30px;font-weight:600;fill:#1f3547}
+      .subtitle{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;font-size:15px;fill:#667886;letter-spacing:.25px}
+      .section{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;font-size:17px;font-weight:600;fill:#345d7e}
+      .panel-title{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;font-size:17px;font-weight:600;fill:#213b4e}
+      .trigger-title{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;font-size:15px;font-weight:600;fill:#5d4c2d}
+      .route-title{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;font-size:15px;font-weight:600;fill:#5c486f}
+      .small{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;font-size:12px;fill:#697b87}
+      .tiny{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;font-size:11px;fill:#73818b}
+      .code{font-family:'IBM Plex Mono','Consolas',monospace;font-size:12px;fill:#345d7e}
+      .node-label{font-family:'IBM Plex Mono','Consolas',monospace;font-size:13px;font-weight:600;fill:#294b63;text-anchor:middle;dominant-baseline:middle}
+      .frame{fill:#fff;stroke:#6f808d;stroke-width:1.5}
+      .panel0{fill:#f2f6f9;stroke:#7694aa;stroke-width:1.4}
+      .panel1{fill:#eef5f7;stroke:#7195a6;stroke-width:1.4}
+      .panel2{fill:#eaf2ef;stroke:#71978c;stroke-width:1.4}
+      .panel3{fill:#f2efe9;stroke:#a08f70;stroke-width:1.4}
+      .trigger{fill:#fbf8ef;stroke:#ad9a73;stroke-width:1.2}
+      .route{fill:#f7f3fa;stroke:#9883aa;stroke-width:1.3}
+      .edge{stroke:#6f8796;stroke-width:1.5;fill:none}
+      .edge-soft{stroke:#8d9da7;stroke-width:1.2;stroke-dasharray:5 4;fill:none}
+      .collapse{stroke:#7d8e99;stroke-width:1.4;stroke-dasharray:7 5;fill:none;marker-end:url(#arrow-muted)}
+      .flow{stroke:#345d7e;stroke-width:1.8;fill:none;marker-end:url(#arrow)}
+      .route-flow{stroke:#8b719e;stroke-width:1.5;stroke-dasharray:7 5;fill:none;marker-end:url(#arrow-muted)}
+      .time{stroke:#ad9a73;stroke-width:1.5;fill:none;marker-end:url(#arrow-muted)}
+      .community{fill:none;stroke:#9fb1bd;stroke-width:1.1;stroke-dasharray:5 4}
+      .node0{fill:#dbeaf3;stroke:#557b94;stroke-width:1.4}
+      .node1{fill:#d9e9ee;stroke:#5b8498;stroke-width:1.4}
+      .node2{fill:#d9ebe4;stroke:#608d80;stroke-width:1.4}
+      .node3{fill:#eee5d3;stroke:#967e5c;stroke-width:1.4}
+      .boundary{fill:#eadff0;stroke:#896b9a;stroke-width:1.4}
+      .separator{stroke:#b5c0c8;stroke-width:1}
+    </style>
+  </defs>
+  <rect width="1800" height="1280" fill="#fff"/>
+
+  <text x="70" y="56" class="title">图 1　时间驱动的分层记忆图：G0、上层图与旁路</text>
+  <text x="70" y="86" class="subtitle">stream_memory_graph_daily · G0 = L0 segments + active L1 boundary memories; upper layers are same-level peer graphs</text>
+  <line x1="70" y1="108" x2="1730" y2="108" class="separator"/>
+
+  <!-- input -->
+  <rect x="70" y="128" width="245" height="60" rx="6" class="frame"/>
+  <text x="92" y="153" class="panel-title">对话流 / segments</text>
+  <text x="92" y="174" class="small">按 event_date 顺序写入</text>
+  <rect x="350" y="128" width="270" height="60" rx="6" class="frame"/>
+  <text x="372" y="153" class="panel-title">切割 + anchor</text>
+  <text x="372" y="174" class="code">Cutter → AnchorExtractor</text>
+  <path d="M315 158 L350 158" class="flow"/>
+  <path d="M620 158 C680 158 680 200 680 228" class="flow"/>
+
+  <!-- trigger column -->
+  <text x="70" y="223" class="section">时间触发器</text>
+  <path d="M195 280 L195 1095" class="time"/>
+  <text x="90" y="430" class="small" transform="rotate(-90 90 430)">time / last_mentioned_at</text>
+
+  <rect x="70" y="250" width="255" height="92" rx="7" class="trigger"/>
+  <text x="92" y="279" class="trigger-title">T0 · 日终 / event_date 变化</text>
+  <text x="92" y="303" class="small">检测 G0 受影响社区</text>
+  <text x="92" y="325" class="small">purify → L1 extraction/fusion</text>
+
+  <rect x="70" y="565" width="255" height="92" rx="7" class="trigger"/>
+  <text x="92" y="594" class="trigger-title">T1 · L1 不活跃 ≥ 7 天</text>
+  <text x="92" y="618" class="small">检测 G1 peer communities</text>
+  <text x="92" y="640" class="small">L1 社区 → L2 compression</text>
+
+  <rect x="70" y="850" width="255" height="92" rx="7" class="trigger"/>
+  <text x="92" y="879" class="trigger-title">T2 · L2 不活跃 ≥ 30 天</text>
+  <text x="92" y="903" class="small">检测 G2 peer communities</text>
+  <text x="92" y="925" class="small">L2 社区 → L3 compression</text>
+
+  <!-- G0 -->
+  <rect x="360" y="230" width="1100" height="250" rx="9" class="panel0"/>
+  <text x="385" y="264" class="panel-title">G0 / L0 + active L1 · 短期工作区</text>
+  <text x="385" y="287" class="small">L0 peer edges 组织事件社区；L0 ↔ L1 boundary edges 让新事件吸收进已有局部主题</text>
+  <ellipse cx="770" cy="370" rx="130" ry="70" class="community"/>
+  <ellipse cx="1110" cy="370" rx="130" ry="70" class="community"/>
+  <line x1="695" y1="350" x2="770" y2="320" class="edge"/><line x1="770" y1="320" x2="845" y2="380" class="edge"/><line x1="695" y1="350" x2="845" y2="380" class="edge"/>
+  <line x1="1035" y1="380" x2="1110" y2="320" class="edge"/><line x1="1110" y1="320" x2="1185" y2="380" class="edge"/><line x1="1035" y1="380" x2="1185" y2="380" class="edge"/>
+  <line x1="845" y1="380" x2="1035" y2="380" class="edge-soft"/>
+  <circle cx="695" cy="350" r="21" class="node0"/><text x="695" y="350" class="node-label">s1</text><circle cx="770" cy="320" r="21" class="node0"/><text x="770" y="320" class="node-label">s2</text><circle cx="845" cy="380" r="21" class="node0"/><text x="845" y="380" class="node-label">s3</text>
+  <circle cx="1035" cy="380" r="21" class="node0"/><text x="1035" y="380" class="node-label">s4</text><circle cx="1110" cy="320" r="21" class="node0"/><text x="1110" y="320" class="node-label">s5</text><circle cx="1185" cy="380" r="21" class="node0"/><text x="1185" y="380" class="node-label">s6</text>
+  <line x1="845" y1="380" x2="1300" y2="340" class="edge-soft"/><line x1="1185" y1="380" x2="1370" y2="390" class="edge-soft"/>
+  <polygon points="1300,315 1322,328 1322,352 1300,365 1278,352 1278,328" class="boundary"/><text x="1300" y="340" class="node-label">b1</text>
+  <polygon points="1370,365 1392,378 1392,402 1370,415 1348,402 1348,378" class="boundary"/><text x="1370" y="390" class="node-label">b2</text>
+  <text x="1250" y="442" class="tiny">b1,b2 = active L1 boundary owners</text>
+  <text x="385" y="430" class="tiny">G0 中的 L1 owner 也会在 G1 作为 L1 peer 节点参与后续时间晋升</text>
+
+  <!-- G0 to G1 -->
+  <path d="M770 402 C770 455 700 500 700 555" class="collapse"/><path d="M1110 402 C1110 455 930 500 930 555" class="collapse"/>
+  <text x="600" y="512" class="tiny">s1,s2,s3 → m1</text><text x="970" y="512" class="tiny">s4,s5,s6 → m2</text>
+
+  <!-- G1 -->
+  <rect x="360" y="530" width="1100" height="210" rx="9" class="panel1"/>
+  <text x="385" y="564" class="panel-title">G1 / L1 · 同层 peer graph</text>
+  <text x="385" y="587" class="small">G0 中的 active L1 owner 在这里变成同层 peer 节点；时间触发后才检测 L1 社区</text>
+  <ellipse cx="820" cy="655" rx="180" ry="66" class="community"/>
+  <line x1="690" y1="635" x2="790" y2="605" class="edge"/><line x1="790" y1="605" x2="900" y2="655" class="edge"/><line x1="900" y1="655" x2="1010" y2="620" class="edge"/><line x1="690" y1="635" x2="900" y2="655" class="edge"/><line x1="790" y1="605" x2="1010" y2="620" class="edge"/>
+  <circle cx="690" cy="635" r="27" class="node1"/><text x="690" y="635" class="node-label">m1</text><circle cx="790" cy="605" r="27" class="node1"/><text x="790" y="605" class="node-label">m2</text><circle cx="900" cy="655" r="27" class="node1"/><text x="900" y="655" class="node-label">m3</text><circle cx="1010" cy="620" r="27" class="node1"/><text x="1010" y="620" class="node-label">m4</text>
+  <text x="1120" y="625" class="small">L1 peer edges</text><text x="385" y="704" class="tiny">L1 保留局部事实；G0 新事件通过 boundary 边进入，G1 只负责 L1→L2 的同层整理</text>
+
+  <!-- G1 to G2 -->
+  <path d="M740 682 C740 725 810 770 810 825" class="collapse"/><path d="M930 682 C930 725 970 770 970 825" class="collapse"/>
+  <text x="625" y="786" class="tiny">m1,m2 → M1</text><text x="995" y="786" class="tiny">m3,m4 → M2</text>
+
+  <!-- G2 -->
+  <rect x="360" y="815" width="1100" height="170" rx="9" class="panel2"/>
+  <text x="385" y="849" class="panel-title">G2 / L2 · 同层 peer graph</text>
+  <text x="385" y="872" class="small">只在 L2 同层图上检测社区；稳定主题经过时间阈值后压缩到 L3</text>
+  <ellipse cx="900" cy="925" rx="190" ry="48" class="community"/>
+  <line x1="800" y1="925" x2="900" y2="895" class="edge"/><line x1="900" y1="895" x2="1010" y2="930" class="edge"/><line x1="800" y1="925" x2="1010" y2="930" class="edge"/>
+  <circle cx="800" cy="925" r="29" class="node2"/><text x="800" y="925" class="node-label">M1</text><circle cx="900" cy="895" r="29" class="node2"/><text x="900" y="895" class="node-label">M2</text><circle cx="1010" cy="930" r="29" class="node2"/><text x="1010" y="930" class="node-label">M3</text>
+  <text x="1120" y="922" class="small">L2 peer edges</text>
+
+  <!-- G2 to G3 -->
+  <path d="M830 955 C830 1005 900 1050 900 1108" class="collapse"/><path d="M960 955 C960 1005 1080 1050 1080 1108" class="collapse"/>
+  <text x="675" y="1063" class="tiny">M1,M2 → H1</text><text x="1110" y="1063" class="tiny">M3 → H2</text>
+
+  <!-- G3 -->
+  <rect x="360" y="1100" width="1100" height="120" rx="9" class="panel3"/>
+  <text x="385" y="1134" class="panel-title">G3 / L3 · 同层 peer graph</text>
+  <text x="385" y="1157" class="small">长期稳定 topic-level knowledge；节点最少、抽象层最高</text>
+  <line x1="900" y1="1170" x2="1080" y2="1170" class="edge"/>
+  <circle cx="900" cy="1170" r="31" class="node3"/><text x="900" y="1170" class="node-label">H1</text><circle cx="1080" cy="1170" r="31" class="node3"/><text x="1080" y="1170" class="node-label">H2</text>
+
+  <!-- router lane -->
+  <rect x="1490" y="230" width="240" height="990" rx="9" class="route"/>
+  <text x="1512" y="264" class="route-title">TopicOwnerRouter</text>
+  <text x="1512" y="287" class="small">只查询相邻上层 owner</text>
+
+  <rect x="1512" y="340" width="196" height="136" rx="6" class="frame"/>
+  <text x="1530" y="370" class="route-title">① G0 → owner lookup</text>
+  <text x="1530" y="395" class="small">输入：provisional L1</text>
+  <text x="1530" y="418" class="small">候选：仅 L2 memories</text>
+  <text x="1530" y="441" class="small">same_topic → L2 fusion</text>
+  <text x="1530" y="462" class="tiny">否则回到普通 L1 路径</text>
+
+  <rect x="1512" y="700" width="196" height="136" rx="6" class="frame"/>
+  <text x="1530" y="730" class="route-title">② L2 → owner lookup</text>
+  <text x="1530" y="755" class="small">输入：due L2 candidate</text>
+  <text x="1530" y="778" class="small">候选：仅 L3 memories</text>
+  <text x="1530" y="801" class="small">same_topic → L3 fusion</text>
+  <text x="1530" y="822" class="tiny">否则普通 L2→L3 晋升</text>
+
+  <path d="M1460 405 C1480 405 1495 408 1512 408" class="route-flow"/>
+  <path d="M1708 475 C1740 560 1740 900 1460 900" class="route-flow"/>
+  <path d="M1460 900 C1480 840 1495 768 1512 768" class="route-flow"/>
+  <path d="M1708 836 C1740 940 1740 1080 1460 1145" class="route-flow"/>
+  <text x="1512" y="515" class="tiny">不是 raw L0 → L2</text>
+  <text x="1512" y="535" class="tiny">不是无条件跳层</text>
+  <text x="1512" y="870" class="tiny">owner routing 不参与社区检测</text>
+  <text x="1512" y="890" class="tiny">只做生命周期归属与融合</text>
+
+  <!-- footer -->
+  <text x="70" y="1250" class="tiny">主线：T0 → G0(L0+L1) → G1(L1) → G2(L2) → G3(L3)；旁路：L0→L2、L1→L3。原始 segment、来源和审计状态仍保留在 state。</text>
+</svg>

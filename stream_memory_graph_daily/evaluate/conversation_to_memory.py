@@ -368,7 +368,7 @@ class MemoryBuildRunner:
                     self._last_share_memory_report = value
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 pass
-        if self.state_file.is_file():
+        if resume_progress and self.state_file.is_file():
             try:
                 saved_state = json.loads(self.state_file.read_text(encoding="utf-8"))
                 if isinstance(saved_state, dict):
@@ -378,8 +378,8 @@ class MemoryBuildRunner:
                     saved_state.pop("_incremental_sequence", None)
                     self._last_persisted_state = saved_state
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                # A new run will create a fresh snapshot. Resume validation is
-                # handled by _run_memory_build before this runner is created.
+                # Resume validation is handled by _run_memory_build before this
+                # runner is created; a fresh run deliberately ignores old state.
                 pass
 
     @staticmethod

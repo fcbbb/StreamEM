@@ -1,0 +1,63 @@
+%% Time-driven hierarchical compression; G0 contains L0 + active L1 boundary memories.
+flowchart LR
+    IN["对话流 / segments"] --> PRE["切割 + anchor"] --> T0
+
+    subgraph T["时间触发器"]
+        T0["T0 日终 / event_date 变化"]
+        T1["T1 L1 due / 不活跃 ≥ 7 天"]
+        T2["T2 L2 due / 不活跃 ≥ 30 天"]
+        T0 --> T1 --> T2
+    end
+
+    subgraph G0["G0 / short-term workspace：L0 + active L1"]
+        s1((s1)) --- s2((s2)) --- s3((s3))
+        s4((s4)) --- s5((s5)) --- s6((s6))
+        s3 -. peer .- s4
+        s2 -. boundary .-> b1{{b1}}
+        s5 -. boundary .-> b2{{b2}}
+        b1{{active L1 owner}}
+        b2{{active L1 owner}}
+    end
+
+    T0 -->|"受影响区域 community detection → purify"| G0
+    G0 -->|"普通路径：provisional L1 → create/fuse L1"| G1
+
+    subgraph G1["G1 / L1：same-level peer graph"]
+        m1((m1)) --- m2((m2))
+        m2 --- m3((m3))
+        m1 --- m3
+        m3 --- m4((m4))
+    end
+
+    T1 -->|"L1 peer community detection → ordinary L1→L2 promotion"| G1
+    G1 -->|"L1 communities → L2 memories"| G2
+
+    subgraph G2["G2 / L2：same-level peer graph"]
+        M1((M1)) --- M2((M2))
+        M2 --- M3((M3))
+        M1 --- M3
+    end
+
+    T2 -->|"L2 peer community detection → ordinary L2→L3 promotion"| G2
+    G2 -->|"L2 communities → L3 memories"| G3
+
+    subgraph G3["G3 / L3：same-level peer graph"]
+        H1((H1)) --- H2((H2))
+    end
+
+    subgraph ROUTER["TopicOwnerRouter：仅查询相邻上层 owner"]
+        B1["G0 新 community<br/>provisional L1"]
+        B2["due L2 promotion candidate"]
+    end
+
+    G0 -. "provisional L1（不是 raw L0）" .-> B1
+    B1 -. "same_topic owner → L2 fusion" .-> G2
+    B1 -. "no owner / uncertain → ordinary L1 path" .-> G1
+
+    G2 -. "due L2（不是 L1）" .-> B2
+    B2 -. "same_topic owner → L3 fusion" .-> G3
+    B2 -. "no owner / uncertain → ordinary L2→L3 promotion" .-> G3
+
+    G1 -.-> R["检索 active L1/L2/L3 + 未压缩 L0"]
+    G2 -.-> R
+    G3 -.-> R

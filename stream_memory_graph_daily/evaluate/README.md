@@ -196,7 +196,9 @@ HTTP 客户端默认读取系统代理环境变量。连接本机或不需要代
 uv run .\stream_memory_graph_daily\evaluate\conversation_to_memory.py `
   --conversation-directory .\Memora\data\monthly\academic_researcher\conversations `
   --output-dir .\stream_memory_graph_daily\evaluate\artifacts\monthly_memory\academic_researcher `
-  --preprocess-workers 16  --postprocess-workers 16`
+  --preprocess-workers 16`
+  --postprocess-workers 16`
   --save-every 10 `
+  --snapshot-every 100`
   --use-cache `
   --no-proxy

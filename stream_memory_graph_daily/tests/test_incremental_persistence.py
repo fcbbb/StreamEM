@@ -68,6 +68,30 @@ class IncrementalPersistenceTests(unittest.TestCase):
             rows = (output_dir / "segments.jsonl").read_text(encoding="utf-8").splitlines()
             self.assertEqual({json.loads(row)["segment_id"] for row in rows}, {"s1", "s2"})
 
+    def test_fresh_run_does_not_use_an_existing_state_as_delta_base(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            first_pipeline = DailyMemoryGraph(encoder=HashEncoder())
+            first_runner = MemoryBuildRunner(first_pipeline, output_dir)
+            first_pipeline.ingest_segment(
+                SegmentRecord("old", "old", "old anchor", "2025-06-01")
+            )
+            first_runner.persist(force_snapshot=True)
+
+            second_pipeline = DailyMemoryGraph(encoder=HashEncoder())
+            second_runner = MemoryBuildRunner(
+                second_pipeline, output_dir, resume_progress=False
+            )
+            second_pipeline.ingest_segment(
+                SegmentRecord("new", "new", "new anchor", "2025-06-01")
+            )
+            second_runner.persist()
+            snapshot = json.loads(
+                (output_dir / "memory_state.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(set(snapshot["segments"]), {"new"})
+            self.assertFalse((output_dir / "memory_state.json.delta.jsonl").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

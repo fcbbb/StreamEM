@@ -614,6 +614,32 @@ class DailyMemoryGraph:
         except Exception as exc:
             return {"kind": "error", "error": exc}, audit_events
 
+    def _run_owner_fusion_chain_task(
+        self,
+        task: tuple[str, MemoryRecord, list[MemoryRecord]],
+    ) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+        """Fuse several provisionals into one owner in order.
+
+        The worker owns only local snapshots.  This lets different owners run
+        concurrently while preserving the dependency between multiple
+        provisionals targeting the same owner.  The caller still applies all
+        returned results in the main state-owning thread.
+        """
+
+        owner_id, owner, provisionals = task
+        current_owner = owner
+        results: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+        for provisional in provisionals:
+            result, audit_events = self._run_owner_fusion_task(
+                (owner_id, current_owner, provisional)
+            )
+            results.append((result, audit_events))
+            if result.get("kind") == "fused_owner":
+                updated = result.get("updated")
+                if isinstance(updated, MemoryRecord):
+                    current_owner = updated
+        return results
+
     def _run_promotion_task(
         self,
         task: tuple[PromotionCandidate, dict[str, MemoryRecord]],
@@ -1390,6 +1416,9 @@ class DailyMemoryGraph:
 
         memory_tasks: list[tuple[PlannedCommunity, list[SegmentRecord]]] = []
         memory_contexts: list[tuple[str, str]] = []
+        owner_bypass_tasks: list[
+            tuple[PlannedCommunity, list[SegmentRecord], tuple[str, str]]
+        ] = []
         for group, _, purified_groups in purified_communities:
             purification_was_split = len(purified_groups) > 1
             for purified in purified_groups:
@@ -1453,97 +1482,24 @@ class DailyMemoryGraph:
                 ]
                 parent_context = (group.community_id, purified.group_id)
 
-                # Always build the lower-level representation first.  Owner
-                # routing is based on the complete provisional L1, rather
-                # than on a raw-segment similarity pre-gate.
-                if self.config.enable_owner_bypass:
-                    provisional_result, provisional_audits = self._run_provisional_task(
-                        (purified_group, purified_segments)
+                # Existing L1 communities use the ordinary fusion path. An
+                # owner lookup must not first extract a duplicate provisional
+                # L1 for a memory that already exists.
+                normal_memory_ids = {
+                    memory_id
+                    for memory_id in purified_memory_ids
+                    if memory_id in self.memories
+                    and self.memories[memory_id].level == 1
+                }
+
+                # Only a genuinely new L1 candidate needs owner routing. The
+                # provisional extraction is also the final L1 result when no
+                # adjacent L2 owner is found.
+                if self.config.enable_owner_bypass and not normal_memory_ids:
+                    owner_bypass_tasks.append(
+                        (purified_group, purified_segments, parent_context)
                     )
-                    self._append_task_audits(provisional_audits)
-                    provisional = provisional_result.get("memory")
-                    if provisional_result.get("kind") == "provisional" and provisional is not None:
-                        routing_audit: list[dict[str, Any]] = []
-                        owner_decision = self.topic_owner_router.decide(
-                            provisional,
-                            self.memories,
-                            llm=self.llm,
-                            top_k=self.config.owner_candidate_top_k,
-                            target_level=2,
-                            audit_sink=routing_audit.append,
-                        )
-                        for audit in routing_audit:
-                            self._audit_stage(
-                                "owner_routing",
-                                "llm_call" if "request" in audit else "decided",
-                                {
-                                    "checkpoint_date": checkpoint_date,
-                                    "parent_community_id": group.community_id,
-                                    "purification_group_id": purified.group_id,
-                                    **audit,
-                                },
-                            )
-                        self._trace(
-                            "owner_routing",
-                            provisional_memory_id=provisional.memory_id,
-                            owner_memory_id=owner_decision.owner_memory_id,
-                            reason=owner_decision.reason,
-                            candidates=[
-                                row["memory_id"]
-                                for row in owner_decision.candidates
-                            ],
-                        )
-                        if owner_decision.owner_memory_id is not None:
-                            owner_id = owner_decision.owner_memory_id
-                            owner = self.memories.get(owner_id)
-                            if owner is not None:
-                                owner_result, owner_audits = self._run_owner_fusion_task(
-                                    (owner_id, owner, provisional)
-                                )
-                                self._append_task_audits(owner_audits)
-                                if self._apply_owner_fusion_result(
-                                    provisional,
-                                    owner_id,
-                                    checkpoint_date,
-                                    changes,
-                                    retry_ids,
-                                    parent_community_id=group.community_id,
-                                    purification_group_id=purified.group_id,
-                                    decision=owner_decision,
-                                    result=owner_result,
-                                ):
-                                    continue
-                                # Fusion failure deliberately falls through
-                                # to the ordinary L1 path below.
-                        normal_memory_ids = {
-                            memory_id
-                            for memory_id in purified_memory_ids
-                            if memory_id in self.memories
-                            and self.memories[memory_id].level == 1
-                        }
-                        if not normal_memory_ids:
-                            self._apply_memory_result(
-                                PlannedCommunity(
-                                    community_id=purified_group.community_id,
-                                    memory_ids=set(),
-                                    segment_ids=purified_segment_ids,
-                                    source=purified_group.source,
-                                ),
-                                purified_segments,
-                                checkpoint_date,
-                                changes,
-                                retry_ids,
-                                parent_community_id=group.community_id,
-                                purification_group_id=purified.group_id,
-                                result={"kind": "extracted", "memory": provisional},
-                            )
-                            continue
-                        purified_group = PlannedCommunity(
-                            community_id=purified_group.community_id,
-                            memory_ids=normal_memory_ids,
-                            segment_ids=purified_segment_ids,
-                            source=purified_group.source,
-                        )
+                    continue
 
                 # No adjacent L2 owner, an invalid owner decision, or a
                 # routing/fusion failure all use the existing ordinary L1 path.
@@ -1561,13 +1517,188 @@ class DailyMemoryGraph:
                 memory_tasks.append((purified_group, purified_segments))
                 memory_contexts.append(parent_context)
 
-        if self.config.postprocess_workers > 1 and len(memory_tasks) > 1:
+        # Run ordinary memory work and provisional owner-bypass extraction in
+        # the same bounded pool.  These workers only read checkpoint state and
+        # return values; all state mutations remain below in the main thread.
+        provisional_results: list[Any] = [None] * len(owner_bypass_tasks)
+        memory_results: list[Any] = [None] * len(memory_tasks)
+        total_initial_tasks = len(owner_bypass_tasks) + len(memory_tasks)
+        if self.config.postprocess_workers > 1 and total_initial_tasks > 1:
             with ThreadPoolExecutor(
                 max_workers=self.config.postprocess_workers
             ) as executor:
-                memory_results = list(executor.map(self._run_memory_task, memory_tasks))
+                futures: list[tuple[str, int, Any]] = []
+                for index, (group, segments, _) in enumerate(owner_bypass_tasks):
+                    futures.append(
+                        (
+                            "provisional",
+                            index,
+                            executor.submit(
+                                self._run_provisional_task, (group, segments)
+                            ),
+                        )
+                    )
+                for index, task in enumerate(memory_tasks):
+                    futures.append(
+                        ("memory", index, executor.submit(self._run_memory_task, task))
+                    )
+                for kind, index, future in futures:
+                    if kind == "provisional":
+                        provisional_results[index] = future.result()
+                    else:
+                        memory_results[index] = future.result()
         else:
+            for index, (group, segments, _) in enumerate(owner_bypass_tasks):
+                provisional_results[index] = self._run_provisional_task(
+                    (group, segments)
+                )
             memory_results = [self._run_memory_task(task) for task in memory_tasks]
+
+        owner_entries: list[dict[str, Any]] = []
+        fallback_memory_tasks: list[tuple[PlannedCommunity, list[SegmentRecord]]] = []
+        fallback_memory_contexts: list[tuple[str, str]] = []
+        for task, task_result in zip(owner_bypass_tasks, provisional_results):
+            purified_group, purified_segments, parent_context = task
+            provisional_result, provisional_audits = task_result
+            self._append_task_audits(provisional_audits)
+            provisional = provisional_result.get("memory")
+            if provisional_result.get("kind") != "provisional" or provisional is None:
+                # Preserve the existing retry/fallback behavior if the
+                # provisional extraction failed.
+                fallback_memory_tasks.append((purified_group, purified_segments))
+                fallback_memory_contexts.append(parent_context)
+                continue
+
+            parent_community_id, purification_group_id = parent_context
+            routing_audit: list[dict[str, Any]] = []
+            owner_decision = self.topic_owner_router.decide(
+                provisional,
+                self.memories,
+                llm=self.llm,
+                top_k=self.config.owner_candidate_top_k,
+                target_level=2,
+                audit_sink=routing_audit.append,
+            )
+            for audit in routing_audit:
+                self._audit_stage(
+                    "owner_routing",
+                    "llm_call" if "request" in audit else "decided",
+                    {
+                        "checkpoint_date": checkpoint_date,
+                        "parent_community_id": parent_community_id,
+                        "purification_group_id": purification_group_id,
+                        **audit,
+                    },
+                )
+            self._trace(
+                "owner_routing",
+                provisional_memory_id=provisional.memory_id,
+                owner_memory_id=owner_decision.owner_memory_id,
+                reason=owner_decision.reason,
+                candidates=[row["memory_id"] for row in owner_decision.candidates],
+            )
+            owner_id = owner_decision.owner_memory_id
+            if owner_id not in self.memories:
+                owner_id = None
+            owner_entries.append(
+                {
+                    "group": purified_group,
+                    "segments": purified_segments,
+                    "parent_community_id": parent_community_id,
+                    "purification_group_id": purification_group_id,
+                    "provisional": provisional,
+                    "owner_id": owner_id,
+                    "decision": owner_decision,
+                }
+            )
+
+        if fallback_memory_tasks:
+            if self.config.postprocess_workers > 1 and len(fallback_memory_tasks) > 1:
+                with ThreadPoolExecutor(
+                    max_workers=self.config.postprocess_workers
+                ) as executor:
+                    fallback_results = list(
+                        executor.map(self._run_memory_task, fallback_memory_tasks)
+                    )
+            else:
+                fallback_results = [
+                    self._run_memory_task(task) for task in fallback_memory_tasks
+                ]
+            memory_tasks.extend(fallback_memory_tasks)
+            memory_contexts.extend(fallback_memory_contexts)
+            memory_results.extend(fallback_results)
+
+        owner_groups: dict[str, list[dict[str, Any]]] = {}
+        for entry in owner_entries:
+            owner_id = entry["owner_id"]
+            if owner_id is not None:
+                owner_groups.setdefault(owner_id, []).append(entry)
+
+        owner_chain_tasks = [
+            (
+                owner_id,
+                self.memories[owner_id],
+                [entry["provisional"] for entry in entries],
+            )
+            for owner_id, entries in owner_groups.items()
+        ]
+        if self.config.postprocess_workers > 1 and len(owner_chain_tasks) > 1:
+            with ThreadPoolExecutor(
+                max_workers=self.config.postprocess_workers
+            ) as executor:
+                owner_chain_results = dict(
+                    zip(
+                        owner_groups,
+                        executor.map(
+                            self._run_owner_fusion_chain_task, owner_chain_tasks
+                        ),
+                    )
+                )
+        else:
+            owner_chain_results = {
+                owner_id: self._run_owner_fusion_chain_task(task)
+                for owner_id, task in zip(owner_groups, owner_chain_tasks)
+            }
+
+        owner_chain_offsets = {owner_id: 0 for owner_id in owner_groups}
+        for entry in owner_entries:
+            provisional = entry["provisional"]
+            owner_id = entry["owner_id"]
+            if owner_id is not None:
+                offset = owner_chain_offsets[owner_id]
+                owner_result, owner_audits = owner_chain_results[owner_id][offset]
+                owner_chain_offsets[owner_id] = offset + 1
+                self._append_task_audits(owner_audits)
+                if self._apply_owner_fusion_result(
+                    provisional,
+                    owner_id,
+                    checkpoint_date,
+                    changes,
+                    retry_ids,
+                    parent_community_id=entry["parent_community_id"],
+                    purification_group_id=entry["purification_group_id"],
+                    decision=entry["decision"],
+                    result=owner_result,
+                ):
+                    continue
+
+            # No owner, invalid owner, or owner-fusion failure: keep the
+            # provisional extraction as an ordinary active L1 memory.
+            self._apply_memory_result(
+                PlannedCommunity(
+                    community_id=entry["group"].community_id,
+                    memory_ids=set(),
+                    segment_ids=set(entry["group"].segment_ids),
+                    source=entry["group"].source,
+                ),
+                entry["segments"],
+                checkpoint_date,
+                changes,
+                retry_ids,
+                parent_community_id=entry["parent_community_id"],
+                purification_group_id=entry["purification_group_id"],
+                result={"kind": "extracted", "memory": provisional},
+            )
 
         for (group, segments), (parent_community_id, purification_group_id), (
             memory_result,
