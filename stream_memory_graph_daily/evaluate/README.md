@@ -19,6 +19,11 @@ python stream_memory_graph_daily/evaluate/conversation_to_memory.py `
   --no-proxy
 ```
 
+`--save-every` 触发增量状态保存：本轮变更会追加到
+`memory_state.json.delta.jsonl`，不会反复重写完整状态和导出文件。
+`--snapshot-every` 控制多少次增量保存后生成一次完整快照，默认是 100；任务结束时总会生成快照。
+使用 `--resume` 时会自动先将增量日志合并到快照，因此可以直接从中断位置继续。
+
 使用 `--use-cache` 后，预处理结果会保存到 `output-dir/preprocess_cache/`。缓存按源文件哈希和模型名校验，适合中断重跑或重复评测：
 
 ```powershell

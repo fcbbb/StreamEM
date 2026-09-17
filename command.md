@@ -13,6 +13,7 @@ python .\stream_memory_graph_daily\evaluate\conversation_to_memory.py `
   --limit 100 `
   --session-range 1-100 `
   --save-every 1 `
+  --snapshot-every 100 `
   --preprocess-workers 1 `
   --postprocess-workers 1 `
   --cache-dir .\stream_memory_graph_daily\evaluate\artifacts\memory_build\preprocess_cache `

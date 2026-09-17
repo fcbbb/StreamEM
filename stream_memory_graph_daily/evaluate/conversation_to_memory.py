@@ -37,6 +37,7 @@ from stream_memory_graph_daily.pipeline import DailyMemoryGraph
 
 DEFAULT_CONVERSATIONS = EVALUATE_ROOT / "data" / "conversations"
 DEFAULT_OUTPUT_DIR = EVALUATE_ROOT / "artifacts" / "memory_build"
+INCREMENTAL_STATE_SCHEMA = "daily_memory_incremental_state_v1"
 
 
 def utc_now() -> str:
@@ -52,6 +53,195 @@ def atomic_write_json(path: Path, value: Any) -> None:
         handle.write("\n")
         temporary = Path(handle.name)
     os.replace(temporary, path)
+
+
+def append_jsonl(path: Path, value: dict[str, Any]) -> None:
+    """Append one durable journal record without replacing the existing file."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _mapping_delta(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "upsert": {
+            key: value
+            for key, value in current.items()
+            if previous.get(key) != value
+        },
+        "delete": sorted(set(previous) - set(current)),
+    }
+
+
+def _append_delta(previous: list[Any], current: list[Any]) -> dict[str, Any]:
+    if len(current) >= len(previous) and current[: len(previous)] == previous:
+        return {"append": current[len(previous) :]}
+    return {"replace": current}
+
+
+def _graph_delta(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    previous_nodes = {
+        str(row["node_id"]): row for row in previous.get("nodes", [])
+    }
+    current_nodes = {
+        str(row["node_id"]): row for row in current.get("nodes", [])
+    }
+    delta: dict[str, Any] = {"nodes": _mapping_delta(previous_nodes, current_nodes)}
+    if previous.get("blocked_edges", []) != current.get("blocked_edges", []):
+        delta["blocked_edges"] = current.get("blocked_edges", [])
+    return delta
+
+
+def _layered_graph_delta(
+    previous: dict[str, Any], current: dict[str, Any]
+) -> dict[str, Any]:
+    previous_graphs = dict(previous.get("graphs", {}))
+    current_graphs = dict(current.get("graphs", {}))
+    graph_deltas = {
+        level: _graph_delta(previous_graphs.get(level, {}), graph)
+        for level, graph in current_graphs.items()
+        if previous_graphs.get(level) != graph
+    }
+    return {
+        "max_level": current.get("max_level"),
+        "graphs": graph_deltas,
+        "delete": sorted(set(previous_graphs) - set(current_graphs)),
+    }
+
+
+def make_state_delta(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    """Build a compact delta between two pipeline state representations."""
+
+    delta: dict[str, Any] = {
+        "maps": {},
+        "append_lists": {},
+        "replace": {},
+    }
+    for name in ("segments", "memories", "boundaries"):
+        delta["maps"][name] = _mapping_delta(
+            dict(previous.get(name, {})), dict(current.get(name, {}))
+        )
+    for name in ("skipped_segments", "trace", "stage_audit", "llm_errors"):
+        change = _append_delta(
+            list(previous.get(name, [])), list(current.get(name, []))
+        )
+        if "replace" in change or change["append"]:
+            delta["append_lists"][name] = change
+    for name in (
+        "active_memory_ids",
+        "pending_segment_ids",
+        "cannot_link_memory_pairs",
+        "current_date",
+        "last_checkpoint_date",
+        "checkpoint_count",
+        "relations",
+        "stats",
+    ):
+        if previous.get(name) != current.get(name):
+            delta["replace"][name] = current.get(name)
+    if previous.get("layered_active_graph") != current.get("layered_active_graph"):
+        delta["layered_active_graph"] = _layered_graph_delta(
+            dict(previous.get("layered_active_graph", {})),
+            dict(current.get("layered_active_graph", {})),
+        )
+    if previous.get("active_graph") != current.get("active_graph"):
+        delta["active_graph"] = _graph_delta(
+            dict(previous.get("active_graph", {})),
+            dict(current.get("active_graph", {})),
+        )
+    return delta
+
+
+def _apply_mapping_delta(target: dict[str, Any], delta: dict[str, Any]) -> None:
+    target.update(delta.get("upsert", {}))
+    for key in delta.get("delete", []):
+        target.pop(key, None)
+
+
+def _apply_graph_delta(target: dict[str, Any], delta: dict[str, Any]) -> None:
+    nodes = {str(row["node_id"]): row for row in target.get("nodes", [])}
+    _apply_mapping_delta(nodes, delta.get("nodes", {}))
+    target["nodes"] = [nodes[key] for key in sorted(nodes)]
+    if "blocked_edges" in delta:
+        target["blocked_edges"] = delta["blocked_edges"]
+    # Edges are derived from nodes and blocked edges when DailyMemoryGraph.load
+    # restores the graph, so they intentionally do not appear in the journal.
+    target.pop("edges", None)
+
+
+def _apply_layered_graph_delta(target: dict[str, Any], delta: dict[str, Any]) -> None:
+    graphs = dict(target.get("graphs", {}))
+    for level, graph_delta in delta.get("graphs", {}).items():
+        graph = dict(graphs.get(level, {"nodes": [], "blocked_edges": []}))
+        _apply_graph_delta(graph, graph_delta)
+        graphs[level] = graph
+    for level in delta.get("delete", []):
+        graphs.pop(str(level), None)
+    target["graphs"] = graphs
+    if delta.get("max_level") is not None:
+        target["max_level"] = delta["max_level"]
+
+
+def apply_state_delta(state: dict[str, Any], delta: dict[str, Any]) -> None:
+    for name, change in delta.get("maps", {}).items():
+        target = state.setdefault(name, {})
+        _apply_mapping_delta(target, change)
+    for name, change in delta.get("append_lists", {}).items():
+        if "replace" in change:
+            state[name] = list(change["replace"])
+        else:
+            state.setdefault(name, []).extend(change.get("append", []))
+    state.update(delta.get("replace", {}))
+    if "layered_active_graph" in delta:
+        _apply_layered_graph_delta(
+            state.setdefault("layered_active_graph", {"graphs": {}}),
+            delta["layered_active_graph"],
+        )
+    if "active_graph" in delta:
+        active_graph = state.setdefault(
+            "active_graph", {"nodes": [], "blocked_edges": []}
+        )
+        _apply_graph_delta(active_graph, delta["active_graph"])
+
+
+def recover_incremental_state(state_file: Path) -> None:
+    """Merge journal records into the snapshot before a ``--resume`` load."""
+
+    journal_file = state_file.with_name(state_file.name + ".delta.jsonl")
+    if not state_file.is_file() or not journal_file.is_file():
+        return
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    base_sequence = int(state.get("_incremental_sequence", 0))
+    applied = False
+    journal_lines = journal_file.read_text(encoding="utf-8").splitlines()
+    for line_number, line in enumerate(journal_lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            # A torn final append is safe to ignore; an earlier corrupt row is not.
+            if line_number == len(journal_lines):
+                break
+            raise ValueError(f"invalid incremental state journal row {line_number}")
+        if record.get("schema_version") != INCREMENTAL_STATE_SCHEMA:
+            raise ValueError(f"unsupported incremental state journal schema in row {line_number}")
+        sequence = int(record["sequence"])
+        if sequence <= base_sequence:
+            continue
+        if sequence != base_sequence + 1:
+            raise ValueError(
+                f"incremental state journal sequence gap: expected {base_sequence + 1}, got {sequence}"
+            )
+        apply_state_delta(state, record["delta"])
+        base_sequence = sequence
+        applied = True
+    if applied:
+        state["_incremental_sequence"] = base_sequence
+        atomic_write_json(state_file, state)
 
 
 def write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
@@ -140,6 +330,7 @@ class MemoryBuildRunner:
         state_file: Path | None = None,
         progress_file: Path | None = None,
         save_every: int = 1,
+        snapshot_every: int = 100,
         resume_progress: bool = False,
         preprocess_workers: int = 1,
         use_cache: bool = False,
@@ -154,12 +345,42 @@ class MemoryBuildRunner:
         self.share_memory_attribution_file = output_dir / "share_memory_attribution.jsonl"
         self.share_memory_report_file = output_dir / "share_memory_report.json"
         self.save_every = max(1, int(save_every))
+        self.snapshot_every = max(1, int(snapshot_every))
+        self.state_journal_file = self.state_file.with_name(
+            self.state_file.name + ".delta.jsonl"
+        )
         self.preprocess_workers = max(1, int(preprocess_workers))
         self.use_cache = bool(use_cache)
         self.cache_dir = cache_dir or output_dir / "preprocess_cache"
         self.metadata = dict(metadata or {})
         self.progress = self._load_progress() if resume_progress else self._new_progress()
         self.share_memory_labels = self._load_share_memory_labels() if resume_progress else []
+        self._persist_sequence = 0
+        self._incremental_writes = 0
+        self._last_persisted_state: dict[str, Any] | None = None
+        self._last_share_memory_report: dict[str, Any] | None = None
+        if self.share_memory_report_file.is_file():
+            try:
+                value = json.loads(
+                    self.share_memory_report_file.read_text(encoding="utf-8")
+                )
+                if isinstance(value, dict):
+                    self._last_share_memory_report = value
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
+        if self.state_file.is_file():
+            try:
+                saved_state = json.loads(self.state_file.read_text(encoding="utf-8"))
+                if isinstance(saved_state, dict):
+                    self._persist_sequence = int(
+                        saved_state.get("_incremental_sequence", 0)
+                    )
+                    saved_state.pop("_incremental_sequence", None)
+                    self._last_persisted_state = saved_state
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                # A new run will create a fresh snapshot. Resume validation is
+                # handled by _run_memory_build before this runner is created.
+                pass
 
     @staticmethod
     def _new_progress() -> dict[str, Any]:
@@ -204,9 +425,7 @@ class MemoryBuildRunner:
             by_id[label_id] = dict(row)
         self.share_memory_labels = [by_id[key] for key in sorted(by_id)]
 
-    def persist(self) -> None:
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.pipeline.save(self.state_file)
+    def _write_materialized_exports(self, share_memory_report: dict[str, Any]) -> None:
         write_jsonl(
             self.output_dir / "memories.jsonl",
             (memory.to_dict() for memory in self.pipeline.memories.values()),
@@ -220,19 +439,55 @@ class MemoryBuildRunner:
             (boundary.to_dict() for boundary in self.pipeline.boundaries.values()),
         )
         write_jsonl(self.output_dir / "trace.jsonl", self.pipeline.trace)
-        write_jsonl(
-            self.output_dir / "stage_audit.jsonl",
-            self.pipeline.stage_audit,
-        )
-        attributions = build_share_memory_attributions(
+        write_jsonl(self.output_dir / "stage_audit.jsonl", self.pipeline.stage_audit)
+        write_jsonl(self.share_memory_attribution_file, build_share_memory_attributions(
             self.share_memory_labels, self.pipeline
-        )
-        share_memory_report = generate_share_memory_report(
-            attributions, self.pipeline
-        )
-        write_jsonl(self.share_memory_labels_file, self.share_memory_labels)
-        write_jsonl(self.share_memory_attribution_file, attributions)
+        ))
         atomic_write_json(self.share_memory_report_file, share_memory_report)
+
+    def persist(self, *, force_snapshot: bool = False) -> None:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        current_state = self.pipeline.to_dict()
+        self._persist_sequence += 1
+        self._incremental_writes += 1
+        write_snapshot = (
+            force_snapshot
+            or self._last_persisted_state is None
+            or self._incremental_writes >= self.snapshot_every
+        )
+        if write_snapshot:
+            current_state["_incremental_sequence"] = self._persist_sequence
+            atomic_write_json(self.state_file, current_state)
+            self.state_journal_file.unlink(missing_ok=True)
+            self._incremental_writes = 0
+            self._last_persisted_state = dict(current_state)
+            self._last_persisted_state.pop("_incremental_sequence", None)
+        else:
+            append_jsonl(
+                self.state_journal_file,
+                {
+                    "schema_version": INCREMENTAL_STATE_SCHEMA,
+                    "sequence": self._persist_sequence,
+                    "delta": make_state_delta(self._last_persisted_state, current_state),
+                },
+            )
+            self._last_persisted_state = current_state
+
+        # Labels are small and are kept current for resume. The large derived
+        # exports are materialized only with a snapshot or at finalization.
+        write_jsonl(self.share_memory_labels_file, self.share_memory_labels)
+        if write_snapshot:
+            attributions = build_share_memory_attributions(
+                self.share_memory_labels, self.pipeline
+            )
+            share_memory_report = generate_share_memory_report(attributions, self.pipeline)
+            self._last_share_memory_report = share_memory_report
+            self._write_materialized_exports(share_memory_report)
+        share_memory_report = self._last_share_memory_report or {
+            "mapped_labels": 0,
+            "fully_compressed_labels": 0,
+            "supervision_leakage_event_count": 0,
+        }
         self.progress["updated_at"] = utc_now()
         self.progress["state_file"] = str(self.state_file.resolve())
         self.progress["stats"] = self.pipeline.stats()
@@ -251,6 +506,7 @@ class MemoryBuildRunner:
                 "schema_version": "daily_memory_build_manifest_v1",
                 "updated_at": utc_now(),
                 "state_file": str(self.state_file.resolve()),
+                "state_journal_file": str(self.state_journal_file.resolve()),
                 "progress_file": str(self.progress_file.resolve()),
                 "stage_audit_file": str((self.output_dir / "stage_audit.jsonl").resolve()),
                 "share_memory_labels_file": str(self.share_memory_labels_file.resolve()),
@@ -261,6 +517,8 @@ class MemoryBuildRunner:
                 "pipeline_schema": self.pipeline.schema_version,
                 "config": self.pipeline.config.to_dict(),
                 "stats": self.pipeline.stats(),
+                "incremental_sequence": self._persist_sequence,
+                "snapshot": write_snapshot,
                 **self.metadata,
             },
         )
@@ -425,7 +683,7 @@ class MemoryBuildRunner:
                 consume(prepared_result)
 
         self.progress["finalize_result"] = self.pipeline.finalize()
-        self.persist()
+        self.persist(force_snapshot=True)
         progress_bar.finish(
             f"完成：成功 {len(self.progress['successful_sessions'])}，"
             f"失败 {len(self.progress['failed_sessions'])}"
@@ -450,6 +708,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--session-range", type=parse_range, metavar="START-END")
     parser.add_argument("--save-every", type=int, default=1)
+    parser.add_argument(
+        "--snapshot-every",
+        type=int,
+        default=100,
+        help="增量保存多少次后生成一次完整状态快照；任务结束时总会生成快照",
+    )
     parser.add_argument(
         "--preprocess-workers",
         type=int,
@@ -510,6 +774,7 @@ def _run_memory_build(
     if args.resume:
         if not state_file.is_file():
             raise FileNotFoundError(f"--resume 指定的状态文件不存在：{state_file}")
+        recover_incremental_state(state_file)
         pipeline = DailyMemoryGraph.load(state_file, llm=llm, encoder=encoder)
     else:
         pipeline = DailyMemoryGraph(llm=llm, encoder=encoder, config=config)
@@ -525,6 +790,7 @@ def _run_memory_build(
         state_file=state_file,
         progress_file=progress_file,
         save_every=args.save_every,
+        snapshot_every=args.snapshot_every,
         resume_progress=args.resume,
         preprocess_workers=args.preprocess_workers,
         use_cache=args.use_cache,
@@ -538,6 +804,7 @@ def _run_memory_build(
             "use_proxy": args.use_proxy,
             "preprocess_workers": args.preprocess_workers,
             "postprocess_workers": args.postprocess_workers,
+            "snapshot_every": args.snapshot_every,
             "use_cache": args.use_cache,
             "cache_dir": str(cache_dir),
         },
